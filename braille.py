@@ -1,10 +1,13 @@
 """
-한글 → 점자 변환 모듈
+한글·영어(로마자) → 점자 변환 모듈
 
 공개 함수 (main.py가 이 이름으로 import함, 변경 금지):
     text_to_braille(text)  : 문자열 → 점자 셀 배열 [[1,4], [2,3,5], ...]
     cells_to_unicode(cells): 점자 셀 배열 → 화면 확인용 유니코드 점자 문자열
 
+영어는 Grade 1(축약 없는 낱자 점역)만 지원한다. 로마자표·대문자표 점형은
+[검증 필요] 표시가 붙어 있으니(JUNG_DOTS의 이중모음과 마찬가지 사유로)
+실제 하드웨어 반영 전 「한국 점자 규정」 로마자 장(章)과 대조할 것.
 
 점 번호 배치:
     1 · · 4
@@ -162,6 +165,31 @@ NUM_DOTS = {
     '0': _mask(2, 4, 5),
 }
 
+# 영어(로마자) 낱자 점형 — 세계 공통 6점 점자 알파벳(Grade 1, 축약 없음).
+# a~j는 NUM_DOTS의 1~0과 점형이 완전히 같다(국제 점자에서 숫자가 a~j
+# 점형을 재사용하는 표준 방식) — 두 표를 나란히 두면 서로 교차 검증이 된다.
+ENG_DOTS = {
+    'a': _mask(1),             'b': _mask(1, 2),          'c': _mask(1, 4),
+    'd': _mask(1, 4, 5),       'e': _mask(1, 5),          'f': _mask(1, 2, 4),
+    'g': _mask(1, 2, 4, 5),    'h': _mask(1, 2, 5),       'i': _mask(2, 4),
+    'j': _mask(2, 4, 5),       'k': _mask(1, 3),          'l': _mask(1, 2, 3),
+    'm': _mask(1, 3, 4),       'n': _mask(1, 3, 4, 5),    'o': _mask(1, 3, 5),
+    'p': _mask(1, 2, 3, 4),    'q': _mask(1, 2, 3, 4, 5), 'r': _mask(1, 2, 3, 5),
+    's': _mask(2, 3, 4),       't': _mask(2, 3, 4, 5),    'u': _mask(1, 3, 6),
+    'v': _mask(1, 2, 3, 6),    'w': _mask(2, 4, 5, 6),    'x': _mask(1, 3, 4, 6),
+    'y': _mask(1, 3, 4, 5, 6), 'z': _mask(1, 3, 5, 6),
+}
+
+# 로마자표: 한글(또는 문자열 시작)에서 로마자 구간으로 들어갈 때 앞에 1회 삽입.
+# 로마자 구간 뒤에 공백 없이 바로 한글이 이어질 때는, 같은 기호를 구간
+# 끝에 한 번 더 찍어 "로마자 종료" 전환 표시로도 재사용한다. [검증 필요]
+ROMAN_MARK_MASK = _mask(5, 6)
+
+# 대문자표: 대문자 한 글자 앞에 1회. 대문자가 2자 이상 연이어 나오면
+# (예: USB) 매 글자 앞이 아니라 구간 맨 앞에 이중대문자표(대문자표 2회)만
+# 찍어서 "이 구간 전체가 대문자"임을 표시한다. [검증 필요]
+CAPITAL_MARK_MASK = _mask(6)
+
 
 # ─────────────────────────────────────────────
 # 음절 분해
@@ -219,19 +247,22 @@ def _encode_syllable(ch):
 
 # ─────────────────────────────────────────────
 # 문자열 단위 처리
-# 같은 종류(공백/숫자/한글/기타)의 연속 구간을 묶어서 처리한다.
-# 수표는 숫자가 끊기지 않고 이어지는 구간마다 한 번만 붙으면 되므로,
-# 이렇게 구간을 미리 묶어두면 별도의 상태 플래그 없이 처리할 수 있다.
+# 같은 종류(공백/숫자/한글/영어/기타)의 연속 구간을 묶어서 처리한다.
+# 수표·로마자표는 그 종류가 끊기지 않고 이어지는 구간마다 한 번만
+# 붙으면 되므로, 이렇게 구간을 미리 묶어두면 별도의 상태 플래그 없이
+# 처리할 수 있다.
 # ─────────────────────────────────────────────
 
 def _char_kind(ch):
-    """문자 하나를 space / digit / hangul / other 중 하나로 분류."""
+    """문자 하나를 space / digit / hangul / english / other 중 하나로 분류."""
     if ch == ' ':
         return 'space'
     if ch.isdigit():
         return 'digit'
     if '가' <= ch <= '힣':
         return 'hangul'
+    if ch.isascii() and ch.isalpha():
+        return 'english'
     return 'other'
 
 
@@ -242,16 +273,47 @@ def _encode_digit_run(run):
     return cells
 
 
+def _encode_capital_span(letters):
+    """대문자만으로 이루어진 구간 → 대문자표 점형들.
+
+    한 글자면 대문자표 1회, 두 글자 이상이면 이중대문자표(2회)만 앞에 찍는다.
+    """
+    if len(letters) == 1:
+        return [_mask_to_dots(CAPITAL_MARK_MASK)]
+    return [_mask_to_dots(CAPITAL_MARK_MASK), _mask_to_dots(CAPITAL_MARK_MASK)]
+
+
+def _encode_english_run(run, needs_end_mark):
+    """연속된 로마자 구간 → [로마자표] + (대문자표 + 낱자)... [+ 로마자 종료표].
+
+    대문자/소문자가 섞여 있으면 대문자 부분마다 _encode_capital_span으로
+    표시하고, 점형 자체는 대소문자 구분 없이 ENG_DOTS 하나만 쓴다
+    (점자는 모양이 아니라 앞에 붙는 표시 기호로만 대문자를 구분한다).
+    needs_end_mark가 True면 구간 끝에 로마자표를 한 번 더 찍어
+    바로 이어지는 한글과 경계를 표시한다.
+    """
+    cells = [_mask_to_dots(ROMAN_MARK_MASK)]
+    for is_upper, letters in itertools.groupby(run, key=str.isupper):
+        letters = ''.join(letters)
+        if is_upper:
+            cells.extend(_encode_capital_span(letters))
+        cells.extend(_mask_to_dots(ENG_DOTS[c.lower()]) for c in letters)
+    if needs_end_mark:
+        cells.append(_mask_to_dots(ROMAN_MARK_MASK))
+    return cells
+
+
 def text_to_braille(text):
     """문자열 전체 → 점자 셀 배열.
 
     반환 예: [[1,2,4], [2,3,4], [1,2]]
     빈 리스트 []는 공백(빈 칸)을 의미한다.
-    문장부호·영문 등 미지원 문자는 건너뛴다.
+    한글·숫자·영어(Grade 1)를 지원하며, 그 외 문장부호 등은 건너뛴다.
     """
+    runs = [(kind, ''.join(group)) for kind, group in itertools.groupby(text, key=_char_kind)]
+
     cells = []
-    for kind, group in itertools.groupby(text, key=_char_kind):
-        run = ''.join(group)
+    for i, (kind, run) in enumerate(runs):
         if kind == 'space':
             cells.extend([] for _ in run)
         elif kind == 'digit':
@@ -259,7 +321,11 @@ def text_to_braille(text):
         elif kind == 'hangul':
             for ch in run:
                 cells.extend(_encode_syllable(ch))
-        # kind == 'other'는 현재 미지원이라 건너뜀
+        elif kind == 'english':
+            # 바로 다음 구간이 공백 없이 한글로 이어지는지 보고 종료표 필요 여부 결정
+            next_kind = runs[i + 1][0] if i + 1 < len(runs) else None
+            cells.extend(_encode_english_run(run, needs_end_mark=(next_kind == 'hangul')))
+        # kind == 'other'(문장부호 등)는 현재 미지원이라 건너뜀
     return cells
 
 
@@ -272,12 +338,12 @@ def cells_to_unicode(cells):
 
 
 # ─────────────────────────────────────────────
-# 자체 점검: 초성 19 / 중성 21 / 종성 27 전수 커버 여부 확인
+# 자체 점검: 초성 19 / 중성 21 / 종성 27 / 로마자 26 전수 커버 여부 확인
 # 어두 ㅇ은 의도적으로 무점(생략)이므로 CHO_DOTS 누락 검사에서 제외한다.
 # ─────────────────────────────────────────────
 
 def _verify_jamo_tables():
-    """자모 테이블 누락 여부를 점검해 문제 메시지 리스트를 돌려준다. 문제 없으면 빈 리스트."""
+    """자모·로마자 테이블 누락 여부를 점검해 문제 메시지 리스트를 돌려준다. 문제 없으면 빈 리스트."""
     problems = []
 
     # 'ㅇ'은 어두에서 무점 처리, 된소리 자모는 DOEN_MAP을 거쳐 예사소리로 인코딩되므로 둘 다 제외
@@ -305,6 +371,10 @@ def _verify_jamo_tables():
             if letter not in JONG_DOTS:
                 problems.append(f"JONG_SPLIT['{compound}']이 참조하는 '{letter}'가 JONG_DOTS에 없음")
 
+    missing_eng = [c for c in "abcdefghijklmnopqrstuvwxyz" if c not in ENG_DOTS]
+    if missing_eng:
+        problems.append(f"로마자 누락: {missing_eng}")
+
     return problems
 
 
@@ -315,12 +385,13 @@ if __name__ == "__main__":
         for p in problems:
             print(" -", p)
     else:
-        print("[자모 점검 통과] 초성 19 / 중성 21 / 종성 27 전수 확인 완료")
+        print("[자모 점검 통과] 초성 19 / 중성 21 / 종성 27 / 로마자 26 전수 확인 완료")
     print()
 
-    tests = ["컵", "물병", "안녕", "책 3권", "돼지 회의 위스키"]
+    tests = ["컵", "물병", "안녕", "책 3권", "돼지 회의 위스키",
+             "우유 500ml", "USB 케이블", "iPhone 신제품"]
     for t in tests:
         cells = text_to_braille(t)
-        print(f"{t:12} → {cells}")
-        print(f"{'':12}   {cells_to_unicode(cells)}")
+        print(f"{t:16} → {cells}")
+        print(f"{'':16}   {cells_to_unicode(cells)}")
         print()
