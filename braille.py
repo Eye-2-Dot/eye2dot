@@ -2,8 +2,10 @@
 한글·영어(로마자) → 점자 변환 모듈
 
 공개 함수 (main.py가 이 이름으로 import함, 변경 금지):
-    text_to_braille(text)  : 문자열 → 점자 셀 배열 [[1,4], [2,3,5], ...]
-    cells_to_unicode(cells): 점자 셀 배열 → 화면 확인용 유니코드 점자 문자열
+    text_to_braille(text)  : 문자열 → 점자 셀 배열. 각 셀은 6비트 정수(mask).
+                              예: [9, 22, 0, 3, ...] (0은 빈 칸/공백)
+    cells_to_unicode(cells): 정수 셀 배열 → 화면 확인용 유니코드 점자 문자열
+    mask_to_dots(mask)     : 정수 하나 → 사람이 읽는 점 번호 튜플, 예: (1, 4)
 
 영어는 Grade 1(축약 없는 낱자 점역)만 지원한다. 로마자표·대문자표 점형은
 [검증 필요] 표시가 붙어 있으니(JUNG_DOTS의 이중모음과 마찬가지 사유로)
@@ -14,8 +16,10 @@
     2 · · 5
     3 · · 6
 
-내부적으로는 점형을 "점 번호가 켜진 6비트 정수"(mask)로 다루고,
-공개 API 경계에서만 [1,4] 같은 점 번호 리스트로 변환한다.
+점형은 처음부터 끝까지 "점 번호가 켜진 6비트 정수"(mask)로만 다룬다.
+n번 점(1~6)은 비트 (n-1)에 대응하므로, 유니코드 점자 변환은
+chr(0x2800 + mask) 한 줄로 끝난다. 점 번호 리스트가 필요한 곳(화면 표시,
+디버깅)에서만 mask_to_dots()로 그때그때 변환한다.
 """
 
 import itertools
@@ -29,16 +33,19 @@ import itertools
 # ─────────────────────────────────────────────
 
 def _mask(*dot_numbers):
-    """점 번호들(1~6)을 받아 6비트 정수 하나로 합친다."""
+    """점 번호들(1~6)을 받아 6비트 정수 하나로 합친다. 테이블 정의 전용."""
     m = 0
     for n in dot_numbers:
         m |= 1 << (n - 1)
     return m
 
 
-def _mask_to_dots(mask):
-    """비트마스크를 오름차순 점 번호 리스트로 되돌린다. 출력 형식의 최종 변환 지점."""
-    return [n for n in range(1, 7) if mask & (1 << (n - 1))]
+def mask_to_dots(mask):
+    """비트마스크 → 오름차순 점 번호 튜플. 화면 표시·디버깅용 공개 보조 함수.
+
+    예: mask_to_dots(9) → (1, 4)
+    """
+    return tuple(n for n in range(1, 7) if mask & (1 << (n - 1)))
 
 
 # ─────────────────────────────────────────────
@@ -215,25 +222,25 @@ def _split_syllable(ch):
 # ─────────────────────────────────────────────
 
 def _encode_choseong(cho):
-    """초성 자모 하나 → 점자 셀 리스트. 어두 ㅇ은 점을 찍지 않으므로 빈 리스트."""
+    """초성 자모 하나 → 점자 셀(mask) 리스트. 어두 ㅇ은 점을 찍지 않으므로 빈 리스트."""
     if cho == 'ㅇ':
         return []
     if cho in DOEN_MAP:
-        return [_mask_to_dots(DOEN_MARK_MASK), _mask_to_dots(CHO_DOTS[DOEN_MAP[cho]])]
-    return [_mask_to_dots(CHO_DOTS[cho])]
+        return [DOEN_MARK_MASK, CHO_DOTS[DOEN_MAP[cho]]]
+    return [CHO_DOTS[cho]]
 
 
 def _encode_jungseong(jung):
-    """중성 자모 하나 → 점자 셀 리스트 (단모음 1칸 / 이중모음 2칸)."""
-    return [_mask_to_dots(m) for m in JUNG_DOTS[jung]]
+    """중성 자모 하나 → 점자 셀(mask) 리스트 (단모음 1칸 / 이중모음 2칸)."""
+    return list(JUNG_DOTS[jung])
 
 
 def _encode_jongseong(jong):
-    """종성 자모 하나(없으면 빈 문자열) → 점자 셀 리스트. 겹받침은 낱자로 분해."""
+    """종성 자모 하나(없으면 빈 문자열) → 점자 셀(mask) 리스트. 겹받침은 낱자로 분해."""
     if not jong:
         return []
     letters = JONG_SPLIT.get(jong, (jong,))
-    return [_mask_to_dots(JONG_DOTS[letter]) for letter in letters]
+    return [JONG_DOTS[letter] for letter in letters]
 
 
 def _encode_syllable(ch):
@@ -267,20 +274,20 @@ def _char_kind(ch):
 
 
 def _encode_digit_run(run):
-    """연속된 숫자 구간 → [수표] + 숫자 점형들."""
-    cells = [_mask_to_dots(NUM_MARK_MASK)]
-    cells.extend(_mask_to_dots(NUM_DOTS[d]) for d in run)
+    """연속된 숫자 구간 → [수표] + 숫자 점형(mask)들."""
+    cells = [NUM_MARK_MASK]
+    cells.extend(NUM_DOTS[d] for d in run)
     return cells
 
 
 def _encode_capital_span(letters):
-    """대문자만으로 이루어진 구간 → 대문자표 점형들.
+    """대문자만으로 이루어진 구간 → 대문자표 점형(mask) 리스트.
 
     한 글자면 대문자표 1회, 두 글자 이상이면 이중대문자표(2회)만 앞에 찍는다.
     """
     if len(letters) == 1:
-        return [_mask_to_dots(CAPITAL_MARK_MASK)]
-    return [_mask_to_dots(CAPITAL_MARK_MASK), _mask_to_dots(CAPITAL_MARK_MASK)]
+        return [CAPITAL_MARK_MASK]
+    return [CAPITAL_MARK_MASK, CAPITAL_MARK_MASK]
 
 
 def _encode_english_run(run, needs_end_mark):
@@ -292,22 +299,22 @@ def _encode_english_run(run, needs_end_mark):
     needs_end_mark가 True면 구간 끝에 로마자표를 한 번 더 찍어
     바로 이어지는 한글과 경계를 표시한다.
     """
-    cells = [_mask_to_dots(ROMAN_MARK_MASK)]
+    cells = [ROMAN_MARK_MASK]
     for is_upper, letters in itertools.groupby(run, key=str.isupper):
         letters = ''.join(letters)
         if is_upper:
             cells.extend(_encode_capital_span(letters))
-        cells.extend(_mask_to_dots(ENG_DOTS[c.lower()]) for c in letters)
+        cells.extend(ENG_DOTS[c.lower()] for c in letters)
     if needs_end_mark:
-        cells.append(_mask_to_dots(ROMAN_MARK_MASK))
+        cells.append(ROMAN_MARK_MASK)
     return cells
 
 
 def text_to_braille(text):
-    """문자열 전체 → 점자 셀 배열.
+    """문자열 전체 → 점자 셀 배열. 각 셀은 6비트 정수(mask).
 
-    반환 예: [[1,2,4], [2,3,4], [1,2]]
-    빈 리스트 []는 공백(빈 칸)을 의미한다.
+    반환 예: [9, 22, 0, 3]
+    0은 공백(빈 칸)을 의미한다.
     한글·숫자·영어(Grade 1)를 지원하며, 그 외 문장부호 등은 건너뛴다.
     """
     runs = [(kind, ''.join(group)) for kind, group in itertools.groupby(text, key=_char_kind)]
@@ -315,7 +322,7 @@ def text_to_braille(text):
     cells = []
     for i, (kind, run) in enumerate(runs):
         if kind == 'space':
-            cells.extend([] for _ in run)
+            cells.extend(0 for _ in run)
         elif kind == 'digit':
             cells.extend(_encode_digit_run(run))
         elif kind == 'hangul':
@@ -330,11 +337,11 @@ def text_to_braille(text):
 
 
 def cells_to_unicode(cells):
-    """점자 셀 배열 → 유니코드 점자 문자열 (화면 확인용).
+    """점자 셀 배열(mask 정수 리스트) → 유니코드 점자 문자열 (화면 확인용).
 
-    예: [[1,2,4]] → '⠋'  (유니코드 점자 블록은 U+2800 + 비트마스크)
+    예: [9] → '⠉'  (유니코드 점자 블록은 U+2800 + 비트마스크)
     """
-    return ''.join(chr(0x2800 + _mask(*cell)) for cell in cells)
+    return ''.join(chr(0x2800 + mask) for mask in cells)
 
 
 # ─────────────────────────────────────────────
@@ -388,10 +395,15 @@ if __name__ == "__main__":
         print("[자모 점검 통과] 초성 19 / 중성 21 / 종성 27 / 로마자 26 전수 확인 완료")
     print()
 
+    def _describe_cell(mask):
+        """디버그 출력용: mask 정수 하나를 'mask(1,4)=9 ⠉' 형태 문자열로."""
+        dots = ",".join(str(d) for d in mask_to_dots(mask))
+        return f"mask({dots})={mask} {chr(0x2800 + mask)}"
+
     tests = ["컵", "물병", "안녕", "책 3권", "돼지 회의 위스키",
              "우유 500ml", "USB 케이블", "iPhone 신제품"]
     for t in tests:
         cells = text_to_braille(t)
-        print(f"{t:16} → {cells}")
-        print(f"{'':16}   {cells_to_unicode(cells)}")
+        print(f"{t} →")
+        print("  " + " / ".join(_describe_cell(m) for m in cells))
         print()
