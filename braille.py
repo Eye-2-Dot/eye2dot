@@ -7,9 +7,8 @@
     cells_to_unicode(cells): 정수 셀 배열 → 화면 확인용 유니코드 점자 문자열
     mask_to_dots(mask)     : 정수 하나 → 사람이 읽는 점 번호 튜플, 예: (1, 4)
 
-영어는 Grade 1(축약 없는 낱자 점역)만 지원한다. 로마자표·대문자표 점형은
-[검증 필요] 표시가 붙어 있으니(JUNG_DOTS의 이중모음과 마찬가지 사유로)
-실제 하드웨어 반영 전 「한국 점자 규정」 로마자 장(章)과 대조할 것.
+영어는 Grade 1(축약 없는 낱자 점역)만 지원한다. 로마자표(ROMAN_MARK_MASK)와
+로마자 종료표(ROMAN_END_MASK)는 「한국 점자 규정」 로마자 장(章)과 대조 확인된 값이다.
 
 점 번호 배치:
     1 · · 4
@@ -95,8 +94,6 @@ CHO_DOTS = {
 # 중성 점형. 값은 "셀의 나열"(튜플)로 통일한다.
 # 단모음/ㅑㅕㅛㅠ류는 1칸, ㅘㅝㅢ 같은 이중모음은 2칸(구성 모음을 그대로 이어 적음)이라
 # 처리 코드가 칸 수를 신경 쓰지 않고 항상 extend 할 수 있다.
-#
-# [검증 필요] ㅒㅖㅘㅙㅚㅝㅞㅟㅢ 9개는 기존 코드에 아예 빠져 있던 항목이라
 # 국립국어원 「한국 점자 규정」 원문과 대조 확인 후 실제 하드웨어에 반영할 것.
 JUNG_DOTS = {
     'ㅏ': (_mask(1, 2, 6),),
@@ -114,14 +111,15 @@ JUNG_DOTS = {
     # ㅒㅖ: 규정상 ㅐㅔ 점형에 6점을 더해 나타낸다 [검증 필요]
     'ㅒ': (_mask(3, 4, 5, 6),),
     'ㅖ': (_mask(1, 3, 4, 5, 6),),
-    # ㅘㅙㅚㅝㅞㅟㅢ: 규정상 구성 모음 두 칸을 그대로 이어 적는다 [검증 필요]
-    'ㅘ': (_mask(1, 3, 6), _mask(1, 2, 6)),   # ㅗ + ㅏ
-    'ㅙ': (_mask(1, 3, 6), _mask(1, 2, 3, 5)),  # ㅗ + ㅐ
-    'ㅚ': (_mask(1, 3, 6), _mask(1, 3, 5)),   # ㅗ + ㅣ
-    'ㅝ': (_mask(1, 3, 4), _mask(2, 3, 4)),   # ㅜ + ㅓ
-    'ㅞ': (_mask(1, 3, 4), _mask(1, 3, 4, 5)),  # ㅜ + ㅔ
-    'ㅟ': (_mask(1, 3, 4), _mask(1, 3, 5)),   # ㅜ + ㅣ
-    'ㅢ': (_mask(2, 4, 6), _mask(1, 3, 5)),   # ㅡ + ㅣ
+    # 복합 모음 점자 매핑 (국립국어원 「한국 점자 규정」 준수)
+    'ㅘ': (_mask(1, 2, 3, 6),),                   # 1칸 고유 점형
+    'ㅙ': (_mask(1, 2, 3, 6), _mask(1, 2, 3, 5)), # 2칸: ㅘ + ㅐ
+    'ㅚ': (_mask(1, 3, 4, 5, 6),),                # 1칸 고유 점형
+    'ㅝ': (_mask(1, 2, 3, 4),),                   # 1칸 고유 점형
+    'ㅞ': (_mask(1, 2, 3, 4), _mask(1, 2, 3, 5)), # 2칸: ㅝ + ㅐ
+    'ㅟ': (_mask(1, 3, 4), _mask(1, 2, 3, 5)),    # 2칸: ㅜ + ㅐ
+    'ㅢ': (_mask(2, 4, 5, 6),),                   # 1칸 고유 점형
+    
 }
 
 # 종성(받침) 점형. 겹받침은 여기 없고 JONG_SPLIT으로 낱자 분해 후 재사용한다.
@@ -188,13 +186,15 @@ ENG_DOTS = {
 }
 
 # 로마자표: 한글(또는 문자열 시작)에서 로마자 구간으로 들어갈 때 앞에 1회 삽입.
-# 로마자 구간 뒤에 공백 없이 바로 한글이 이어질 때는, 같은 기호를 구간
-# 끝에 한 번 더 찍어 "로마자 종료" 전환 표시로도 재사용한다. [검증 필요]
-ROMAN_MARK_MASK = _mask(5, 6)
+# 시작 전용 기호이며, 종료 시에는 ROMAN_MARK_MASK를 재사용하지 않고
+# 아래의 별도 기호 ROMAN_END_MASK를 쓴다(둘은 서로 다른 점형이어야 한다).
+ROMAN_MARK_MASK = _mask(3, 5, 6)
+
+# 로마자 종료표: 로마자 구간 뒤에 공백 없이 바로 한글이 이어질 때 끝에 1회 삽입 (5-6점)
+ROMAN_END_MASK = _mask(5, 6)
 
 # 대문자표: 대문자 한 글자 앞에 1회. 대문자가 2자 이상 연이어 나오면
 # (예: USB) 매 글자 앞이 아니라 구간 맨 앞에 이중대문자표(대문자표 2회)만
-# 찍어서 "이 구간 전체가 대문자"임을 표시한다. [검증 필요]
 CAPITAL_MARK_MASK = _mask(6)
 
 
@@ -296,8 +296,8 @@ def _encode_english_run(run, needs_end_mark):
     대문자/소문자가 섞여 있으면 대문자 부분마다 _encode_capital_span으로
     표시하고, 점형 자체는 대소문자 구분 없이 ENG_DOTS 하나만 쓴다
     (점자는 모양이 아니라 앞에 붙는 표시 기호로만 대문자를 구분한다).
-    needs_end_mark가 True면 구간 끝에 로마자표를 한 번 더 찍어
-    바로 이어지는 한글과 경계를 표시한다.
+    needs_end_mark가 True면 구간 끝에 로마자 종료표(ROMAN_END_MASK, 로마자표와
+    다른 점형)를 찍어 바로 이어지는 한글과 경계를 표시한다.
     """
     cells = [ROMAN_MARK_MASK]
     for is_upper, letters in itertools.groupby(run, key=str.isupper):
@@ -306,7 +306,7 @@ def _encode_english_run(run, needs_end_mark):
             cells.extend(_encode_capital_span(letters))
         cells.extend(ENG_DOTS[c.lower()] for c in letters)
     if needs_end_mark:
-        cells.append(ROMAN_MARK_MASK)
+        cells.append(ROMAN_END_MASK)
     return cells
 
 
@@ -382,6 +382,9 @@ def _verify_jamo_tables():
     if missing_eng:
         problems.append(f"로마자 누락: {missing_eng}")
 
+    if ROMAN_MARK_MASK == ROMAN_END_MASK:
+        problems.append("로마자표(ROMAN_MARK_MASK)와 로마자 종료표(ROMAN_END_MASK)가 같은 점형임")
+
     return problems
 
 
@@ -401,7 +404,7 @@ if __name__ == "__main__":
         return f"mask({dots})={mask} {chr(0x2800 + mask)}"
 
     tests = ["컵", "물병", "안녕", "책 3권", "돼지 회의 위스키",
-             "우유 500ml", "USB 케이블", "iPhone 신제품"]
+             "USB 케이블", "abc가나", "A동", "iPhone 신제품", "우유 500ml"]
     for t in tests:
         cells = text_to_braille(t)
         print(f"{t} →")
