@@ -6,10 +6,13 @@ ESP32-CAM → 이미지 수신 → Gemini 인식 → 점역 → 응답
 import os
 import io
 import json
+import httpx
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
+from google.genai import errors as genai_errors
 from PIL import Image
 
 from braille import text_to_braille, cells_to_unicode
@@ -27,6 +30,35 @@ client = genai.Client(api_key=API_KEY)
 MODEL = "gemini-2.5-flash"
 
 app = FastAPI(title="Eye 2 Dot API")
+
+VALID_MODES = {"label", "book"}
+
+
+# ─────────────────────────────────────────────
+# Gemini 호출 실패 — error_code로 원인을 구분해서 상위(handle)로 전달
+# ─────────────────────────────────────────────
+class GeminiCallError(Exception):
+    def __init__(self, error_code: str, reason: str):
+        self.error_code = error_code
+        self.reason = reason
+        super().__init__(reason)
+
+
+def _call_gemini(contents) -> str:
+    """Gemini 호출 + 응답 텍스트 추출. 실패 원인을 구분해 GeminiCallError로 변환한다."""
+    try:
+        response = client.models.generate_content(model=MODEL, contents=contents)
+    except genai_errors.APIError as e:
+        if e.code == 429:
+            raise GeminiCallError("rate_limit", "Gemini 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요.") from e
+        raise GeminiCallError("network_error", f"Gemini API 오류: {e.message or e}") from e
+    except httpx.TransportError as e:
+        raise GeminiCallError("network_error", f"Gemini 서버에 연결하지 못했습니다: {e}") from e
+
+    try:
+        return response.text.strip()
+    except (ValueError, AttributeError) as e:
+        raise GeminiCallError("parse_failed", "Gemini 응답에서 텍스트를 읽지 못했습니다.") from e
 
 
 # ─────────────────────────────────────────────
@@ -65,19 +97,10 @@ def recognize_object(image_bytes: bytes) -> dict:
 - reason: 왜 그렇게 판단했는지 한국어 1문장. 30자 이내.
 - 사물을 식별할 수 없으면 name을 빈 문자열로 두세요."""
 
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=[
-            {
-                "type": "image",
-                "mime_type": "image/jpeg",
-                "data": image_bytes,
-            },
-            {"type": "text", "text": prompt},
-        ],
-    )
-
-    raw = response.text.strip()
+    raw = _call_gemini([
+        types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),  # 이미지 파트
+        prompt,  # 텍스트는 문자열 그대로 넘기면 SDK가 자동 변환
+    ])
 
     # 모델이 ```json ... ``` 로 감싸는 경우 제거
     if raw.startswith("```"):
@@ -88,13 +111,14 @@ def recognize_object(image_bytes: bytes) -> dict:
 
     try:
         data = json.loads(raw)
-        return {
-            "name": data.get("name", "").strip(),
-            "reason": data.get("reason", "").strip(),
-        }
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         print(f"[JSON 파싱 실패] 원본 응답: {raw}")
-        return {"name": "", "reason": "인식 결과를 해석하지 못했습니다."}
+        raise GeminiCallError("parse_failed", "인식 결과를 해석하지 못했습니다.") from e
+
+    return {
+        "name": data.get("name", "").strip(),
+        "reason": data.get("reason", "").strip(),
+    }
 
 
 # ─────────────────────────────────────────────
@@ -110,19 +134,10 @@ def recognize_text(image_bytes: bytes) -> dict:
 - 줄바꿈은 유지하세요.
 - 텍스트가 없으면 아무것도 출력하지 마세요."""
 
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=[
-            {
-                "type": "image",
-                "mime_type": "image/jpeg",
-                "data": image_bytes,
-            },
-            {"type": "text", "text": prompt},
-        ],
-    )
-
-    text = response.text.strip()
+    text = _call_gemini([
+        types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),  # 이미지 파트
+        prompt,  # 텍스트는 문자열 그대로 넘기면 SDK가 자동 변환
+    ])
     return {
         "name": text,
         "reason": f"{len(text)}자를 인식했습니다." if text else "텍스트를 찾지 못했습니다.",
@@ -169,10 +184,35 @@ async def process_file(mode: str = Form("label"), image: UploadFile = File(...))
     return handle(image_bytes, mode)
 
 
+def _is_valid_image(image_bytes: bytes) -> bool:
+    """바이트가 실제로 열 수 있는 이미지인지 확인 (Gemini 호출 전 사전 검증, 비용 낭비 방지)."""
+    try:
+        Image.open(io.BytesIO(image_bytes)).verify()
+        return True
+    except Exception:
+        return False
+
+
 # ─────────────────────────────────────────────
 # 공통 처리 로직
 # ─────────────────────────────────────────────
 def handle(image_bytes: bytes, mode: str):
+    if mode not in VALID_MODES:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "invalid_mode",
+                "reason": f"mode는 {sorted(VALID_MODES)} 중 하나여야 합니다 (받은 값: '{mode}')",
+            },
+            status_code=400,
+        )
+
+    if not _is_valid_image(image_bytes):
+        return JSONResponse(
+            {"ok": False, "error": "invalid_image", "reason": "올바른 이미지 파일이 아닙니다."},
+            status_code=400,
+        )
+
     try:
         image_bytes = preprocess(image_bytes)
 
@@ -203,6 +243,14 @@ def handle(image_bytes: bytes, mode: str):
 
         print(f"[응답] {text} / {len(cells)}셀 / {payload['braille_preview']}")
         return JSONResponse(payload)
+
+    except GeminiCallError as e:
+        status_map = {"rate_limit": 429, "network_error": 502, "parse_failed": 500}
+        print(f"[Gemini 에러] {e.error_code}: {e.reason}")
+        return JSONResponse(
+            {"ok": False, "error": e.error_code, "reason": e.reason},
+            status_code=status_map.get(e.error_code, 500),
+        )
 
     except Exception as e:
         print(f"[에러] {type(e).__name__}: {e}")
