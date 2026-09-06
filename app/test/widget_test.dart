@@ -8,7 +8,7 @@ void main() {
   testWidgets('첫 화면에 모드 선택 버튼 두 개가 보인다', (WidgetTester tester) async {
     await tester.pumpWidget(const Eye2DotApp());
 
-    expect(find.text('무엇을 만들까요?'), findsOneWidget);
+    expect(find.text('모드 선택'), findsOneWidget);
     expect(find.text('점자 라벨 만들기'), findsOneWidget);
     expect(find.text('책 점역하기'), findsOneWidget);
   });

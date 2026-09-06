@@ -6,8 +6,11 @@ ESP32-CAM → 이미지 수신 → Gemini 인식 → 점역 → 응답
 import os
 import io
 import json
+from typing import Optional
+
 import httpx
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from google import genai
@@ -15,7 +18,7 @@ from google.genai import types
 from google.genai import errors as genai_errors
 from PIL import Image
 
-from braille import text_to_braille, cells_to_unicode
+from braille import text_to_braille, text_to_braille_lines, cells_to_unicode
 
 # ─────────────────────────────────────────────
 # 초기화
@@ -31,7 +34,60 @@ MODEL = "gemini-2.5-flash"
 
 app = FastAPI(title="Eye 2 Dot API")
 
+# ─────────────────────────────────────────────
+# CORS
+#
+# Flutter 앱을 Chrome에서 띄우면 브라우저가 다른 출처(localhost:포트)로
+# 요청하는 것으로 보기 때문에, 허용하지 않으면 요청이 차단된다.
+#
+# 개발용 설정. 외부 배포 시 특정 도메인만 허용할 것.
+# ─────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 VALID_MODES = {"label", "book"}
+
+
+def _invalid_mode_response(mode: str) -> JSONResponse:
+    """잘못된 mode에 대한 400 응답. 실제 엔드포인트와 목이 같은 응답을 쓰도록 여기 한 곳에 둔다."""
+    return JSONResponse(
+        {
+            "ok": False,
+            "error": "invalid_mode",
+            "reason": f"mode는 {sorted(VALID_MODES)} 중 하나여야 합니다 (받은 값: '{mode}')",
+        },
+        status_code=400,
+    )
+
+
+def _braille_fields(text: str, mode: str) -> dict:
+    """점역 결과를 응답에 담을 형태로 만든다.
+
+    책 모드는 본문이 길어서 여러 줄이 되므로, 펌웨어가 어디서 줄을 바꿔야 할지
+    알 수 있도록 줄 단위 2차원 배열로 낸다.
+    라벨 모드는 사물 이름 한 개라 항상 한 줄이므로 1차원 배열 그대로 낸다.
+
+    실제 처리(handle)와 목(process_mock)이 같은 함수를 쓰도록 여기 한 곳에 둔다.
+    """
+    if mode == "book":
+        lines = text_to_braille_lines(text)
+        return {
+            "braille": lines,
+            # 줄 구분이 보이도록 줄바꿈으로 이어 붙인다
+            "braille_preview": "\n".join(cells_to_unicode(line) for line in lines),
+            "cell_count": sum(len(line) for line in lines),  # 전체 셀 수
+        }
+
+    cells = text_to_braille(text)
+    return {
+        "braille": cells,
+        "braille_preview": cells_to_unicode(cells),
+        "cell_count": len(cells),
+    }
 
 
 # ─────────────────────────────────────────────
@@ -184,6 +240,64 @@ async def process_file(mode: str = Form("label"), image: UploadFile = File(...))
     return handle(image_bytes, mode)
 
 
+# ─────────────────────────────────────────────
+# 엔드포인트 4: 앱 개발용 목(mock)
+#
+# GEMINI_API_KEY 없이, 카메라 없이 앱 화면을 개발할 수 있게
+# 고정된 더미 결과를 즉시 돌려준다.
+# ─────────────────────────────────────────────
+
+# 책 모드용 예시 본문. 실제 OCR 결과처럼 여러 줄로 되어 있다.
+MOCK_BOOK_TEXT = (
+    "점자는 손끝으로 읽는 문자이다. 여섯 개의 점을 일정한 규칙에 따라 조합하여 글자를 "
+    "나타내며, 가로 두 칸 세로 세 칸으로 이루어진 직사각형 안에 점을 찍어 표현한다.\n"
+    "한글 점자는 초성과 중성과 종성을 각각 다른 점형으로 적기 때문에 한 글자가 여러 칸을 "
+    "차지하는 경우가 많다.\n"
+    "시각장애인은 이 점자를 통해 책을 읽고 글을 쓴다. 점자를 익히면 스스로 정보를 얻을 수 "
+    "있고, 학습과 일상생활에서 다른 사람의 도움에 의존하지 않아도 된다."
+)
+
+
+def _mock_payload(text: str, reason: str, mode: str) -> dict:
+    """더미 텍스트를 실제 성공 응답과 똑같은 형식으로 감싼다.
+
+    braille 값을 손으로 적어넣지 않고 실제 처리와 같은 _braille_fields()를 쓴다.
+    그래야 실서버 응답과 형식이 어긋나지 않는다.
+    """
+    return {
+        "ok": True,
+        "text": text,
+        "reason": reason,
+        **_braille_fields(text, mode),
+    }
+
+
+# 서버가 켜질 때 한 번만 점역해 두고, 요청이 오면 그대로 돌려준다.
+MOCK_RESULTS = {
+    "label": _mock_payload("우유", "흰색 종이팩에 우유 표기가 있습니다.", "label"),
+    "book": _mock_payload(MOCK_BOOK_TEXT, "OCR로 텍스트를 인식했습니다.", "book"),
+}
+
+
+@app.post("/process-mock")
+async def process_mock(mode: str = "label", image: Optional[UploadFile] = File(None)):
+    """Gemini를 호출하지 않고 고정된 더미 결과를 즉시 돌려주는 목 엔드포인트.
+
+    사용법: POST /process-mock?mode=label
+            파일은 붙여도 되고 안 붙여도 된다.
+            (붙이더라도 읽지 않는다. image 인자를 받기만 하는 이유는
+             앱이 실제 엔드포인트와 똑같은 형태로 요청을 보내볼 수 있게 하기 위함.)
+
+    응답 형식은 /process-file과 완전히 같으므로,
+    앱은 나중에 주소만 바꾸면 그대로 동작한다.
+    """
+    if mode not in VALID_MODES:
+        return _invalid_mode_response(mode)
+
+    print(f"[목 응답] mode={mode}")
+    return JSONResponse(MOCK_RESULTS[mode])
+
+
 def _is_valid_image(image_bytes: bytes) -> bool:
     """바이트가 실제로 열 수 있는 이미지인지 확인 (Gemini 호출 전 사전 검증, 비용 낭비 방지)."""
     try:
@@ -198,14 +312,7 @@ def _is_valid_image(image_bytes: bytes) -> bool:
 # ─────────────────────────────────────────────
 def handle(image_bytes: bytes, mode: str):
     if mode not in VALID_MODES:
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": "invalid_mode",
-                "reason": f"mode는 {sorted(VALID_MODES)} 중 하나여야 합니다 (받은 값: '{mode}')",
-            },
-            status_code=400,
-        )
+        return _invalid_mode_response(mode)
 
     if not _is_valid_image(image_bytes):
         return JSONResponse(
@@ -230,18 +337,16 @@ def handle(image_bytes: bytes, mode: str):
                 "reason": result["reason"],
             })
 
-        cells = text_to_braille(text)
-
         payload = {
             "ok": True,
-            "text": text,                          # TTS 음성 안내용
+            "text": text,                          # 앱은 화면 표시, 펌웨어 1은 음성 안내에 사용
             "reason": result["reason"],            # 판단 근거 1문장
-            "braille": cells,                      # 솔레노이드 구동용
-            "braille_preview": cells_to_unicode(cells),  # 사람이 확인용
-            "cell_count": len(cells),
+            # braille(솔레노이드 구동용) / braille_preview(사람이 확인용) / cell_count
+            # 책 모드는 braille이 줄 단위 2차원 배열이 된다.
+            **_braille_fields(text, mode),
         }
 
-        print(f"[응답] {text} / {len(cells)}셀 / {payload['braille_preview']}")
+        print(f"[응답] {text} / {payload['cell_count']}셀 / {payload['braille_preview']}")
         return JSONResponse(payload)
 
     except GeminiCallError as e:

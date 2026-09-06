@@ -4,6 +4,8 @@
 공개 함수 (main.py가 이 이름으로 import함, 변경 금지):
     text_to_braille(text)  : 문자열 → 점자 셀 배열. 각 셀은 6비트 정수(mask).
                               예: [9, 22, 0, 3, ...] (0은 빈 칸/공백)
+    text_to_braille_lines(text) : 문자열 → 줄 단위로 나눈 2차원 셀 배열.
+                              예: [[13, 41, 0, 22], [9, 3, 36]]
     cells_to_unicode(cells): 정수 셀 배열 → 화면 확인용 유니코드 점자 문자열
     mask_to_dots(mask)     : 정수 하나 → 사람이 읽는 점 번호 튜플, 예: (1, 4)
 
@@ -334,6 +336,72 @@ def text_to_braille(text):
             cells.extend(_encode_english_run(run, needs_end_mark=(next_kind == 'hangul')))
         # kind == 'other'(문장부호 등)는 현재 미지원이라 건너뜀
     return cells
+
+
+# ─────────────────────────────────────────────
+# 줄 나누기
+#
+# text_to_braille()은 개행(\n)을 'other'로 보고 건너뛰기 때문에 결과가
+# 한 줄로 쭉 이어진다. 그러면 펌웨어가 어디서 줄을 바꿔야 할지 알 수 없다.
+# 그래서 줄바꿈 위치를 판단하는 책임을 이 함수가 따로 맡는다.
+# ─────────────────────────────────────────────
+
+# 한 줄에 들어가는 최대 점자 셀 수.
+# 실제 점자 출력 장치의 한 줄 폭에 맞춰야 하는 값이다.
+# 일단 30으로 두고, 하드웨어 실측 후 조정할 것.
+MAX_CELLS_PER_LINE = 30
+
+
+def text_to_braille_lines(text, max_cells=MAX_CELLS_PER_LINE):
+    """문자열 → 줄 단위로 나눈 2차원 점자 셀 배열.
+
+    반환 예: [[13, 41, 0, 22], [9, 3, 36, 11]]
+
+    줄을 나누는 기준은 두 가지다.
+      1. 원문의 개행(\\n) 위치에서 무조건 줄을 바꾼다.
+      2. 그 안에서 한 줄이 max_cells를 넘으면 낱말 경계(공백)에서 줄을 바꾼다.
+
+    낱말 하나를 통째로 점역해서 줄에 담기 때문에 낱말 중간이 잘리지 않는다.
+    다만 낱말 하나가 max_cells보다 긴 경우에는 담을 방법이 없으므로
+    그때만 예외적으로 max_cells 단위로 끊는다.
+
+    낱말 사이의 공백은 실제 점자와 같이 빈 칸(0) 한 개로 넣는다.
+    줄 끝에는 공백을 남기지 않으며, 점역 결과가 비는 줄은 만들지 않는다.
+    """
+    lines = []
+
+    # 1. 원문 개행으로 먼저 자른다.
+    for paragraph in text.split('\n'):
+        current = []
+
+        # 2. 낱말 단위로 점역해서 줄에 채워 넣는다.
+        for word in paragraph.split():
+            cells = text_to_braille(word)
+            if not cells:
+                continue  # 문장부호만 있는 낱말 등 점역 결과가 없으면 건너뛴다
+
+            # 지금 줄에 (빈 칸 + 낱말)을 더 넣을 수 없으면 여기서 줄을 끊는다
+            if current and len(current) + 1 + len(cells) > max_cells:
+                lines.append(current)
+                current = []
+
+            if current:
+                current.append(0)  # 낱말 사이 빈 칸
+
+            # 낱말 하나가 한 줄보다 긴 경우에만 어쩔 수 없이 중간에서 끊는다
+            while len(current) + len(cells) > max_cells:
+                room = max_cells - len(current)
+                current.extend(cells[:room])
+                lines.append(current)
+                current = []
+                cells = cells[room:]
+
+            current.extend(cells)
+
+        if current:
+            lines.append(current)
+
+    return lines
 
 
 def cells_to_unicode(cells):
