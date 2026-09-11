@@ -38,7 +38,7 @@ class ResultScreen extends StatelessWidget {
 }
 */
 
-import 'package:flutter/material.dart';
+/* import 'package:flutter/material.dart';
 
 class ResultScreen extends StatelessWidget {
   final String mode; 
@@ -146,6 +146,149 @@ class ResultScreen extends StatelessWidget {
                           );
                         },
                         child: const Text('출력하기', style: TextStyle(fontSize: 20)),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+*/
+
+import 'package:flutter/material.dart';
+
+class ResultScreen extends StatelessWidget {
+  final String mode; 
+  final String text;
+  final bool isOk; 
+  final String? errorCode; 
+  final String? reason; 
+  final dynamic braille; 
+
+  const ResultScreen({
+    super.key, 
+    required this.mode, 
+    required this.text, 
+    required this.isOk, 
+    this.errorCode,
+    this.reason,
+    this.braille,
+  });
+
+  // 네트워크 오류만 남기고 나머지 오류 문구는 통합 정리
+  String getErrorMessage(String? errorCode) {
+    if (errorCode == 'network_error') {
+      return '네트워크 연결을 확인해 주세요.';
+    }
+    return '오류가 발생했습니다.';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final errorMessage = getErrorMessage(errorCode);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('인식 결과'), 
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: Center(
+                  child: isOk 
+                    ? (mode == 'label'
+                        ? Text(
+                            text,
+                            style: const TextStyle(fontSize: 64, fontWeight: FontWeight.bold),
+                            textAlign: TextAlign.center,
+                          )
+                        : SingleChildScrollView(
+                            child: Text(
+                              text,
+                              style: const TextStyle(fontSize: 24, height: 1.5),
+                            ),
+                          ))
+                    : Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            errorMessage,
+                            style: const TextStyle(fontSize: 24, color: Colors.red, height: 1.5),
+                            textAlign: TextAlign.center,
+                          ),
+                          if (reason != null && reason!.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              reason!,
+                              style: const TextStyle(fontSize: 14, color: Colors.grey),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ],
+                      ),
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // 2. 하단 버튼 영역 분기
+              Row(
+                children: [
+                  // 성공 시: 기존처럼 '다시 찍기', '출력하기' 버튼 제공
+                  if (isOk) ...[
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 20),
+                        ),
+                        onPressed: () {
+                          Navigator.pop(context); // 카메라 화면으로 한 칸 뒤로 가기
+                        },
+                        child: const Text('다시 찍기', style: TextStyle(fontSize: 20)),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 20),
+                          backgroundColor: Colors.blueAccent,
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('출력 요청을 보냈습니다.', style: TextStyle(fontSize: 16)),
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                        },
+                        child: const Text('출력하기', style: TextStyle(fontSize: 20)),
+                      ),
+                    ),
+                  ] 
+                  // 오류 발생 시: '처음으로' 버튼 하나만 제공
+                  else ...[
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 20),
+                          backgroundColor: Colors.grey[800],
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: () {
+                          // 쌓여있는 이전 화면들을 모두 닫고 제일 첫 화면(모드 선택)으로 돌아가는 함수
+                          Navigator.popUntil(context, (route) => route.isFirst);
+                        },
+                        child: const Text('처음으로', style: TextStyle(fontSize: 20)),
                       ),
                     ),
                   ],
