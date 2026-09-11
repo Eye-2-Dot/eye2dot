@@ -44,7 +44,7 @@ class ResultScreen extends StatelessWidget {
   final String mode; 
   final String text;
 
-  const ResultScreen({Key? key, required this.mode, required this.text}) : super(key: key);
+  const ResultScreen({super.key, required this.mode, required this.text}) : super(key: key);
 
   // 오류 코드에 따른 안내 문구 변환 함수
   String getErrorMessage(String errorCode) {
