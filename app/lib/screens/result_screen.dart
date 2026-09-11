@@ -43,11 +43,19 @@ import 'package:flutter/material.dart';
 class ResultScreen extends StatelessWidget {
   final String mode; 
   final String text;
+  final bool isOk; // 서버 성공 여부 추가
+  final String? errorCode; // 서버 에러 코드 추가 (성공일 경우 null)
 
-  const ResultScreen({super.key, required this.mode, required this.text}) : super(key: key);
+  const ResultScreen({
+    super.key, 
+    required this.mode, 
+    required this.text, 
+    required this.isOk, 
+    this.errorCode,
+  });
 
   // 오류 코드에 따른 안내 문구 변환 함수
-  String getErrorMessage(String errorCode) {
+  String getErrorMessage(String? errorCode) {
     switch (errorCode) {
       case 'recognition_failed':
         return '인식하지 못했습니다.\n다시 찍어 주세요.';
@@ -65,18 +73,8 @@ class ResultScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ----------------------------------------------------
-    // [개발용 더미 데이터]
-    const bool dummyOk = false; // true면 성공, false면 실패 화면
-    const String dummyErrorCode = 'network_error'; // 테스트할 오류 코드
-    const String dummyMode = 'label'; 
-    const String dummyText = '우유';
-    // ----------------------------------------------------
-    
-    final isOk = dummyOk;
-    final currentMode = dummyMode; 
-    final currentText = dummyText; 
-    final errorMessage = getErrorMessage(dummyErrorCode);
+    // 더미 데이터를 삭제하고 생성자로 전달받은 실제 변수(isOk, mode, text, errorCode)를 직접 사용합니다.
+    final errorMessage = getErrorMessage(errorCode);
 
     return Scaffold(
       appBar: AppBar(
@@ -93,15 +91,15 @@ class ResultScreen extends StatelessWidget {
                 child: Center(
                   child: isOk 
                     // 성공했을 때의 화면 분기
-                    ? (currentMode == 'label'
+                    ? (mode == 'label'
                         ? Text(
-                            currentText,
+                            text,
                             style: const TextStyle(fontSize: 64, fontWeight: FontWeight.bold),
                             textAlign: TextAlign.center,
                           )
                         : SingleChildScrollView(
                             child: Text(
-                              currentText,
+                              text,
                               style: const TextStyle(fontSize: 24, height: 1.5),
                             ),
                           ))
@@ -114,7 +112,7 @@ class ResultScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-              
+
               // 2. 하단 버튼 영역
               Row(
                 children: [
