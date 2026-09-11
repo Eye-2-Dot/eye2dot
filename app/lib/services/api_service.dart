@@ -21,6 +21,13 @@ import '../constants.dart';
 /// );
 /// if (result['ok'] == true) { ... } else { ... }
 ///
+/// 타이핑 입력은 같은 형태로 sendText 를 부른다.
+///
+/// final result = await ApiService.sendText(text: '우유');
+///
+/// 두 함수의 응답 형태가 완전히 같아서, 결과 화면은 사진에서 왔는지
+/// 타이핑에서 왔는지 구분할 필요가 없다.
+///
 /// ── 반환 형태 ──
 ///
 /// 성공:
@@ -57,6 +64,12 @@ class ApiService {
 
   static String get _processPath => _useMock ? '/process-mock' : '/process-file';
 
+  /// 타이핑으로 받은 글자를 보내는 주소.
+  ///
+  /// 사진과 달리 인식 단계가 필요 없어 점역만 하면 되므로 주소가 따로 있다.
+  /// 목/실서버가 같은 주소를 쓰기 때문에 _useMock 의 영향을 받지 않는다.
+  static const String _textPath = '/process-text';
+
   // ── 1. 서버 연결 확인 ──
 
   /// 서버가 켜져 있는지 확인한다. 예외를 던지지 않고 true/false 만 돌려준다.
@@ -89,11 +102,49 @@ class ApiService {
       return _fail('invalid_image', '사진에 문제가 있습니다.\n다시 촬영해 주세요.');
     }
 
+    return _withRetry(() => _postImage(bytes: bytes, mode: mode));
+  }
+
+  // ── 3. 타이핑한 글자 전송 ──
+
+  /// 사용자가 직접 입력한 글자를 서버로 보내고 점역 결과를 받아온다.
+  ///
+  /// 사진 경로와 응답 형태가 완전히 같다. 준석의 결과 화면은 어느 쪽에서
+  /// 왔는지 구분하지 않아도 된다.
+  ///
+  /// [text] 사용자가 입력한 글자. 앞뒤 공백은 자동으로 잘라낸다.
+  /// [mode] 현재는 kModeLabel 만 쓴다. 책 모드에도 붙이게 되면 그대로 동작한다.
+  static Future<Map<String, dynamic>> sendText({
+    required String text,
+    String mode = kModeLabel,
+  }) async {
+    if (mode != kModeLabel && mode != kModeBook) {
+      return _fail('invalid_mode', '모드 값이 잘못되었습니다.');
+    }
+
+    // 화면에서 이미 막고 있더라도, 여기서 한 번 더 확인한다.
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      return _fail('invalid_text', '내용을 입력해 주세요.');
+    }
+
+    return _withRetry(() => _postText(text: trimmed, mode: mode));
+  }
+
+  // ── 내부 구현 ──
+
+  /// 네트워크 오류가 나면 최대 3회까지 다시 시도하는 공통 껍데기.
+  ///
+  /// 사진 전송과 글자 전송이 똑같은 규칙을 쓰므로 한 곳에 모아 두었다.
+  /// [send] 는 요청을 한 번 보내고 해석된 결과를 돌려주는 함수다.
+  static Future<Map<String, dynamic>> _withRetry(
+    Future<Map<String, dynamic>> Function() send,
+  ) async {
     for (var attempt = 1; attempt <= _maxAttempts; attempt++) {
       final bool isLastAttempt = attempt == _maxAttempts;
 
       try {
-        final result = await _post(bytes: bytes, mode: mode);
+        final result = await send();
 
         // 서버가 일시적인 연결 실패(502)를 보고한 경우에만 다시 시도한다.
         // rate_limit(429)은 다시 보내면 상황이 더 나빠지므로 바로 반환한다.
@@ -123,15 +174,20 @@ class ApiService {
     return _fail('network_error', '네트워크 연결을 확인해 주세요.');
   }
 
-  // ── 내부 구현 ──
-
-  /// 실제 HTTP 요청 한 번. 네트워크 예외는 위로 그대로 던진다.
-  static Future<Map<String, dynamic>> _post({
+  /// 사진 전송 요청 한 번. 네트워크 예외는 위로 그대로 던진다.
+  static Future<Map<String, dynamic>> _postImage({
     required Uint8List bytes,
     required String mode,
   }) async {
     final uri = Uri.parse('$kServerBaseUrl$_processPath?mode=$mode');
     final request = http.MultipartRequest('POST', uri);
+
+    // mode 를 두 방식으로 함께 보낸다.
+    //   /process-mock  → 쿼리스트링(?mode=)으로 받는다
+    //   /process-file  → 폼 필드로 받는다 (규격서: "필드 mode + image")
+    // 둘 다 채워 두면 실서버로 바꿀 때 이 파일을 안 고쳐도 된다.
+    // 서버는 자기가 안 쓰는 쪽은 그냥 무시한다.
+    request.fields['mode'] = mode;
 
     // 필드 이름은 반드시 'image'. filename 도 꼭 붙여야 서버가 파일로 인식한다.
     request.files.add(
@@ -142,6 +198,35 @@ class ApiService {
     final body = utf8.decode(await streamed.stream.toBytes());
 
     return _parse(body, mode);
+  }
+
+  /// 글자 전송 요청 한 번. 네트워크 예외는 위로 그대로 던진다.
+  ///
+  /// 사진과 같은 폼 방식으로 보낸다. 기존 엔드포인트가 전부 Form 을 쓰므로
+  /// 서버 코드가 한 가지 방식으로 통일된다.
+  /// mode 는 쿼리와 폼 양쪽에 넣는다 (사진 쪽과 같은 이유).
+  ///
+  /// 서버가 JSON 본문으로 받도록 정해지면 이 함수만 고치면 된다.
+  /// 나머지 코드는 전부 그대로 쓸 수 있다.
+  static Future<Map<String, dynamic>> _postText({
+    required String text,
+    required String mode,
+  }) async {
+    final uri = Uri.parse('$kServerBaseUrl$_textPath?mode=$mode');
+
+    final res = await http
+        .post(
+          uri,
+          // 한글이 깨지지 않도록 charset 을 명시한다.
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+          },
+          body: {'mode': mode, 'text': text},
+          encoding: utf8,
+        )
+        .timeout(_timeout);
+
+    return _parse(utf8.decode(res.bodyBytes), mode);
   }
 
   /// 응답 본문을 해석해 화면에서 쓸 형태로 정규화한다.
@@ -223,6 +308,8 @@ class ApiService {
         return '인식하지 못했습니다.\n다시 찍어 주세요.';
       case 'invalid_image':
         return '사진에 문제가 있습니다.\n다시 촬영해 주세요.';
+      case 'invalid_text':
+        return '내용을 입력해 주세요.';
       case 'rate_limit':
         return '잠시 후 다시 시도해 주세요.';
       case 'network_error':
