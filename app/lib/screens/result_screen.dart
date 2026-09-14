@@ -160,7 +160,7 @@ class ResultScreen extends StatelessWidget {
 }
 */
 
-import 'package:flutter/material.dart';
+/* import 'package:flutter/material.dart';
 
 class ResultScreen extends StatelessWidget {
   final String mode; 
@@ -292,6 +292,178 @@ class ResultScreen extends StatelessWidget {
                       ),
                     ),
                   ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+} */
+
+import 'dart:typed_data';
+import 'package:flutter/material.dart';
+
+class ResultScreen extends StatelessWidget {
+  final String mode; 
+  final String text;
+  final bool isOk; 
+  final String? errorCode; 
+  final String? reason; 
+  final dynamic braille; 
+  final String? braillePreview; // 서버에서 전달받은 점자 유니코드 문자열
+  final Uint8List? imageBytes; // 상단에 표시할 촬영/선택된 이미지 데이터
+
+  const ResultScreen({
+    super.key, 
+    required this.mode, 
+    required this.text, 
+    required this.isOk, 
+    this.errorCode,
+    this.reason,
+    this.braille,
+    this.braillePreview,
+    this.imageBytes,
+  });
+
+  // 네트워크 오류 시 앱 자체 문구 출력, 그 외에는 서버가 보낸 reason 값을 그대로 화면에 표시
+  String getErrorMessage() {
+    if (errorCode == 'network_error') {
+      return '네트워크 연결을 확인해 주세요.';
+    }
+    return reason ?? '오류가 발생했습니다.';
+  }
+
+  // 타이핑 버튼 클릭 시 호출되는 팝업 함수
+  void _showTypingDialog(BuildContext context) {
+    final TextEditingController textController = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('직접 텍스트 입력'),
+          content: TextField(
+            controller: textController,
+            decoration: const InputDecoration(hintText: '점자로 변환할 텍스트를 입력하세요'),
+            autofocus: true,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('취소'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context); // 팝업 닫기
+                // TODO: textController.text 값을 서버로 전송하여 점자 데이터를 다시 받아오는 로직 추가 필요
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('${textController.text} 입력 완료 (서버 연동 필요)')),
+                );
+              },
+              child: const Text('확인'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('인식 결과'), 
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 1. 상단: 사진 표시 영역 (중앙 정렬)
+              Expanded(
+                flex: 2,
+                child: Center(
+                  child: imageBytes != null
+                      ? Image.memory(imageBytes!, fit: BoxFit.contain)
+                      : const Icon(Icons.image_not_supported, size: 64, color: Colors.grey),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // 2. 중단: 인식된 텍스트 및 점자 표기 또는 오류 메시지
+              Expanded(
+                flex: 3,
+                child: Center(
+                  child: isOk 
+                    ? SingleChildScrollView(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              text,
+                              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                              textAlign: TextAlign.center,
+                            ),
+                            if (braillePreview != null) ...[
+                              const SizedBox(height: 16),
+                              Text(
+                                braillePreview!,
+                                style: const TextStyle(fontSize: 32, letterSpacing: 2.0),
+                                textAlign: TextAlign.center,
+                              ),
+                            ]
+                          ],
+                        ),
+                      )
+                    : Text(
+                        getErrorMessage(),
+                        style: const TextStyle(fontSize: 24, color: Colors.red, height: 1.5),
+                        textAlign: TextAlign.center,
+                      ),
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // 3. 하단: 다시 찍기 / 타이핑 / 출력하기 버튼 영역
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 20)),
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('다시 찍기', style: TextStyle(fontSize: 16)),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 20)),
+                      onPressed: () => _showTypingDialog(context),
+                      child: const Text('타이핑', style: TextStyle(fontSize: 16)),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 20),
+                        backgroundColor: Colors.blueAccent,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('출력 요청을 보냈습니다.', style: TextStyle(fontSize: 16)),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                      child: const Text('출력하기', style: TextStyle(fontSize: 16)),
+                    ),
+                  ),
                 ],
               ),
             ],

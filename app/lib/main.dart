@@ -1,4 +1,4 @@
-import 'package:app/screens/result_screen.dart';
+/* import 'package:app/screens/result_screen.dart';*/
 import 'package:flutter/material.dart';
 
 import 'screens/mode_screen.dart';
