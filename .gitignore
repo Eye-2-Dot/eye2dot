@@ -1,6 +1,7 @@
 server/.env
 server/__pycache__/
 server/.venv/
+server/test_output.wav
 .venv/
 __pycache__/
 *.pyc

@@ -11,7 +11,7 @@ from typing import Optional
 import httpx
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -19,6 +19,7 @@ from google.genai import errors as genai_errors
 from PIL import Image
 
 from braille import text_to_braille, text_to_braille_lines, cells_to_unicode
+from speech import text_to_pcm, estimate_duration, SpeechError
 
 # ─────────────────────────────────────────────
 # 초기화
@@ -47,6 +48,9 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # 브라우저는 커스텀 응답 헤더를 기본적으로 JS에 보여주지 않는다.
+    # 앱(Chrome)에서도 /speech의 재생 시간을 읽을 수 있도록 노출한다.
+    expose_headers=["X-Audio-Duration"],
 )
 
 VALID_MODES = {"label", "book"}
@@ -363,3 +367,63 @@ def handle(image_bytes: bytes, mode: str):
             {"ok": False, "error": str(e)},
             status_code=500,
         )
+
+
+# ─────────────────────────────────────────────
+# 엔드포인트 5: 펌웨어 1 음성 안내용 (텍스트 → raw PCM)
+#
+# 음성 생성은 서버가 전부 하고, 기기(ATmega2560)는 받은 바이트를 재생만 한다.
+# 성공 응답은 JSON이 아니라 오디오 바이트 그대로다.
+# ─────────────────────────────────────────────
+
+# 이보다 길면 재생 시간이 너무 길어져 기기의 버퍼 관리가 어렵다
+MAX_SPEECH_TEXT_LENGTH = 200
+
+
+@app.get("/speech")
+def speech(text: str = ""):
+    """텍스트를 8kHz / 8비트 unsigned / 모노 raw PCM으로 바꿔 돌려준다.
+
+    사용법: GET /speech?text=우유   (text는 UTF-8로 퍼센트 인코딩)
+
+    async def가 아니라 def인 이유: 음성 생성은 네트워크 통신과 ffmpeg 실행으로 수 초 걸리는
+    블로킹 작업이다. def로 두면 FastAPI가 별도 스레드에서 실행하므로 그동안 다른 요청이 막히지 않는다.
+    """
+    text = text.strip()
+
+    # 공백·기호뿐인 텍스트는 읽어줄 내용이 없으므로 빈 텍스트와 똑같이 취급한다
+    if not any(ch.isalnum() for ch in text):
+        return JSONResponse(
+            {"ok": False, "error": "missing_text", "reason": "읽어줄 텍스트가 없습니다."},
+            status_code=400,
+        )
+
+    if len(text) > MAX_SPEECH_TEXT_LENGTH:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "text_too_long",
+                "reason": f"text는 {MAX_SPEECH_TEXT_LENGTH}자 이하여야 합니다 (받은 길이: {len(text)}자)",
+            },
+            status_code=400,
+        )
+
+    try:
+        pcm = text_to_pcm(text)
+    except SpeechError as e:
+        status_map = {"tts_unavailable": 503, "conversion_failed": 500}
+        print(f"[음성 에러] {e.error_code}: {e.reason}")
+        return JSONResponse(
+            {"ok": False, "error": e.error_code, "reason": e.reason},
+            status_code=status_map.get(e.error_code, 500),
+        )
+
+    duration = estimate_duration(pcm)
+    print(f"[음성] {text} / {len(pcm)} bytes / {duration:.3f}초")
+    return Response(
+        content=pcm,
+        media_type="application/octet-stream",
+        # 기기가 본문을 받기 전에 재생 시간을 알 수 있게 한다.
+        # 정확한 바이트 수는 자동으로 붙는 Content-Length를 쓰면 된다.
+        headers={"X-Audio-Duration": f"{duration:.3f}"},
+    )
