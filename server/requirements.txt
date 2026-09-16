@@ -1,0 +1,25 @@
+# Eye 2 Dot 서버 의존성
+#
+# 설치 (server 폴더에서):
+#   pip install -r requirements.txt
+#
+# 기존 패키지는 현재 개발 환경(.venv, Python 3.14)에 설치된 버전 그대로 고정했다.
+# edge-tts만 범위로 지정한다 — 아래 설명 참고.
+
+# ── 웹 서버 ──
+fastapi==0.141.1
+uvicorn==0.52.1
+python-multipart==0.0.32  # FastAPI의 Form·File 파라미터 처리에 필요. 없으면 서버가 시작되지 않는다
+
+# ── 인식 (Gemini) ──
+google-genai==2.17.0
+httpx==0.28.1             # main.py가 네트워크 예외(TransportError)를 구분하려고 직접 import한다
+pillow==12.3.0            # 이미지 검증·축소
+python-dotenv==1.2.2      # .env에서 GEMINI_API_KEY 읽기
+
+# ── 음성 (speech.py) ──
+# edge-tts는 Microsoft Edge의 비공개 음성 서버를 쓴다. 서버 쪽 규격이 바뀌면 옛 버전은
+# 갑자기 동작하지 않고 새 버전으로 고쳐지므로, 버전을 고정하지 않고 7.x 안에서 최신을 받는다.
+# (8.x는 API가 바뀔 수 있어 막아둔다)
+edge-tts>=7.2.8,<8
+imageio-ffmpeg==0.6.0     # ffmpeg 실행 파일을 pip으로 받는다. 시스템 설치·PATH 설정이 필요 없다
