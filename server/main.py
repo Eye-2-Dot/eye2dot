@@ -32,7 +32,9 @@ if not API_KEY:
     raise RuntimeError(".env 파일에 GEMINI_API_KEY가 없습니다")
 
 client = genai.Client(api_key=API_KEY)
-MODEL = "gemini-3.8-flash"
+# gemini-3.8-flash 는 수요가 몰려 high demand 오류가 잦고 느림 (30초+)
+# lite 는 5초 내외이며 사물 인식 정확도도 충분함
+MODEL = "gemini-3.1-flash-lite"
 
 app = FastAPI(title="Eye 2 Dot API")
 

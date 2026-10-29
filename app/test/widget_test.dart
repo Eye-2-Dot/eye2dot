@@ -19,6 +19,7 @@ void main() {
     await tester.tap(find.text('책 점역하기'));
     await tester.pumpAndSettle();
 
-    expect(find.text('카메라 화면 (mode: book)'), findsOneWidget);
+    // 책 모드 카메라 화면의 안내 문구 (라벨 모드에서는 문구가 다르다)
+    expect(find.text('점역할 책 페이지를 촬영해 주세요'), findsOneWidget);
   });
 }

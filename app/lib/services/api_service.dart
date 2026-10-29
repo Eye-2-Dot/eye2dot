@@ -1,15 +1,45 @@
-import 'dart:typed_data';
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import '../constants.dart';
 
+/// 사진 인식은 서버가 Gemini를 거치므로 보통 2~5초 걸린다. 넉넉히 잡는다.
+const Duration _kImageTimeout = Duration(seconds: 30);
+
+/// 텍스트 점역은 AI를 부르지 않아 빠르다.
+const Duration _kTextTimeout = Duration(seconds: 10);
+
+/// 네트워크 오류 시 재시도 횟수. 첫 시도 1번 + 재시도 최대 3번 = 최대 4번 보낸다.
+const int _kMaxRetries = 3;
+
 /// 서버 통신 담당 클래스
 ///
-/// 지금은 껍데기 상태로, 서버에 연결하지 않고 고정된 더미 결과만 돌려준다.
-/// 실제 통신 코드는 D가 나중에 채워 넣을 예정.
+/// 화면 쪽은 성공이든 실패든 항상 Map 하나를 받는다.
+/// 서버 오류와 네트워크 오류는 예외를 던지지 않고 {ok: false, error, reason?} 으로 돌려준다.
+///
+/// 성공 여부는 HTTP 상태 코드가 아니라 반드시 ok 필드로 판단할 것.
+/// (recognition_failed 는 HTTP 200 으로 온다)
 ///
 /// 주의: Chrome(웹)에서 실행하므로 dart:io 의 File 은 절대 쓰지 말 것.
 /// 이미지는 항상 Uint8List(바이트 배열) 형태로 주고받는다.
 class ApiService {
+  // ── 테스트에서 바꿔 끼우는 통로. 앱 코드에서는 건드리지 말 것 ──
+
+  /// 더미 모드 여부. 평소에는 constants.dart 의 kUseMock 을 따른다.
+  @visibleForTesting
+  static bool useMock = kUseMock;
+
+  /// 요청을 보낼 연결(client)을 만드는 함수. 테스트에서는 가짜 서버(MockClient)로 바꾼다.
+  @visibleForTesting
+  static http.Client Function() clientFactory = http.Client.new;
+
+  /// 재시도 전에 쉬는 시간의 단위. n번째 재시도 전에 n배만큼 쉰다 (1초, 2초, 3초).
+  @visibleForTesting
+  static Duration retryDelayUnit = const Duration(seconds: 1);
+
   /// 이미지를 서버로 보내고 인식 + 점역 결과를 받아온다.
   ///
   /// [bytes] 촬영한 이미지의 원본 바이트
@@ -62,35 +92,160 @@ class ApiService {
   /// recognition_failed 는 HTTP 200으로 내려온다.
   /// 따라서 상태 코드가 아니라 ok 필드로 성공 여부를 판단할 것.
   ///
-  /// 보낼 곳(개발 중): POST {kServerBaseUrl}/process-mock?mode={mode}
-  ///                  Gemini를 호출하지 않고 위 더미 결과를 즉시 돌려준다.
-  ///                  파일은 붙여도 되고 안 붙여도 된다.
+  /// 앱이 직접 만드는 실패 응답에는 reason 이 없다. 화면이 error 코드로 문구를 고른다.
+  ///   network_error : 연결 실패(재시도 후에도) 또는 시간 초과
+  ///   parse_failed  : 서버 응답이 JSON 이 아니거나 ok 필드가 없음 (예: FastAPI 자동 422 오류)
   ///
-  /// 보낼 곳(실서버): POST {kServerBaseUrl}/process-file
-  ///                 multipart/form-data, 필드 mode + image(파일)
-  ///                 응답 형식이 목과 완전히 같으므로 주소만 바꾸면 된다.
+  /// 보낼 곳: POST {kServerBaseUrl}/process-file?mode={mode}
+  ///         multipart/form-data, 필드 image(파일)
+  ///
+  /// kUseMock 이 true 면 서버에 보내지 않고 1초 뒤 더미 결과를 돌려준다.
   static Future<Map<String, dynamic>> sendImage({
     required Uint8List bytes,
     required String mode,
   }) async {
-    // TODO(D): 아래 더미 응답을 실제 서버 통신(http 패키지)으로 교체할 것.
-    //          bytes 는 그때 사용된다. 지금은 받기만 하고 쓰지 않는다.
-    //          교체 후에는 이 파일 아래쪽의 목 데이터 상수도 지우면 된다.
+    if (useMock) return _mockResult(mode);
 
-    // 서버 응답을 기다리는 느낌을 내기 위한 임시 지연.
-    // 화면 쪽에서 로딩 표시를 붙여 볼 수 있도록 남겨 둔다.
+    final uri = Uri.parse('$kServerBaseUrl/process-file')
+        .replace(queryParameters: {'mode': mode});
+
+    return _send(
+      timeout: _kImageTimeout,
+      // multipart 요청은 한 번만 보낼 수 있으므로 시도할 때마다 새로 만든다
+      buildRequest: () => http.MultipartRequest('POST', uri)
+        ..files.add(http.MultipartFile.fromBytes(
+          'image',
+          bytes,
+          // 파일 이름이 없으면 서버(FastAPI)가 파일이 아니라 글자로 보고 422 오류를 낸다
+          filename: 'photo.jpg',
+        )),
+    );
+  }
+
+  /// 텍스트를 서버로 보내 점역 결과를 받아온다. AI 는 거치지 않는다.
+  ///
+  /// [text] 점역할 글자 (서버가 앞뒤 공백을 떼므로 응답의 text 가 보낸 값과 다를 수 있다)
+  /// [mode] kModeLabel 또는 kModeBook
+  ///
+  /// 응답 형식은 sendImage 와 같다. reason 은 "직접 입력한 문구입니다."
+  ///
+  /// 보낼 곳: POST {kServerBaseUrl}/translate
+  ///         JSON {"text": ..., "mode": ...}
+  ///
+  /// kUseMock 이 true 면 입력과 상관없이 "우유" 더미 결과를 돌려준다.
+  /// 앱에서는 점역을 할 수 없는데, 입력 글자에 엉뚱한 점자를 붙이면
+  /// 나중에 펌웨어 테스트 때 헷갈리므로 text 도 더미 그대로 둔다.
+  static Future<Map<String, dynamic>> sendText({
+    required String text,
+    required String mode,
+  }) async {
+    if (useMock) {
+      final mock = await _mockResult(mode);
+      return {...mock, 'reason': '직접 입력한 문구입니다.'};
+    }
+
+    final uri = Uri.parse('$kServerBaseUrl/translate');
+
+    return _send(
+      timeout: _kTextTimeout,
+      // 헤더를 먼저 정해야 body 를 넣을 때 charset=utf-8 이 자동으로 붙는다
+      buildRequest: () => http.Request('POST', uri)
+        ..headers['Content-Type'] = 'application/json'
+        ..body = jsonEncode({'text': text, 'mode': mode}),
+    );
+  }
+
+  /// 서버 응답을 기다리는 느낌을 내도록 1초 쉬었다가 더미 결과를 준다 (로딩 화면 확인용).
+  static Future<Map<String, dynamic>> _mockResult(String mode) async {
     await Future.delayed(const Duration(seconds: 1));
-
     return mode == kModeBook ? _kMockBookResult : _kMockLabelResult;
   }
+
+  /// 요청을 보내고 응답을 Map 으로 바꾼다. 네트워크 오류면 재시도한다.
+  ///
+  /// 재시도함    : 연결 실패(서버 꺼짐, 와이파이 끊김), 서버의 network_error(Gemini 연결 실패)
+  /// 재시도 안 함: 시간 초과, rate_limit, 그 밖에 서버가 답을 준 모든 실패
+  static Future<Map<String, dynamic>> _send({
+    required http.BaseRequest Function() buildRequest,
+    required Duration timeout,
+  }) async {
+    for (var attempt = 0;; attempt++) {
+      // 연결 실패는 순식간에 나므로 쉬지 않으면 재시도가 의미 없이 한꺼번에 끝난다
+      if (attempt > 0) await Future.delayed(retryDelayUnit * attempt);
+
+      final client = clientFactory();
+      try {
+        final response = await client
+            .send(buildRequest())
+            .then(http.Response.fromStream)
+            .timeout(timeout);
+        final result = _parse(response);
+
+        if (result['error'] == 'network_error' && attempt < _kMaxRetries) {
+          debugPrint('[ApiService] 서버 network_error, 재시도 ${attempt + 1}/$_kMaxRetries: ${result['reason']}');
+          continue;
+        }
+        return result;
+      } on TimeoutException {
+        // 시간 초과는 재시도하지 않는다. 서버가 아직 Gemini 를 기다리는 중일 가능성이 높아서,
+        // 다시 보내면 같은 요청을 두 번 처리해 API 비용과 한도를 낭비하고 사용자도 오래 기다린다.
+        debugPrint('[ApiService] 시간 초과 (${timeout.inSeconds}초)');
+        return _failure('network_error');
+      } on http.ClientException catch (e) {
+        debugPrint('[ApiService] 연결 실패 (${attempt + 1}번째 시도): $e');
+        if (attempt < _kMaxRetries) continue;
+        return _failure('network_error');
+      } finally {
+        // 연결을 닫아야 Chrome 에서 시간 초과된 요청도 실제로 취소된다
+        client.close();
+      }
+    }
+  }
+
+  /// HTTP 응답 → Map. 서버 응답은 성공이든 실패든 상태 코드와 상관없이 그대로 돌려준다.
+  static Map<String, dynamic> _parse(http.Response response) {
+    // 서버 응답 헤더에 문자 인코딩이 없으면 response.body 는 한글이 깨질 수 있어 UTF-8 로 직접 푼다
+    final body = utf8.decode(response.bodyBytes, allowMalformed: true);
+
+    Object? decoded;
+    try {
+      decoded = jsonDecode(body);
+    } on FormatException {
+      decoded = null;
+    }
+
+    // 서버 응답에는 항상 ok 필드가 있다. 없으면 FastAPI 자동 오류(422)나 서버 밖의 오류 페이지 등이다.
+    if (decoded is! Map<String, dynamic> || decoded['ok'] is! bool) {
+      debugPrint('[ApiService] 알 수 없는 응답 (HTTP ${response.statusCode}): $body');
+      return _failure('parse_failed');
+    }
+
+    if (decoded['ok'] == true) {
+      decoded['braille'] = _normalizeBraille(decoded['braille']);
+    }
+    return decoded;
+  }
+
+  /// JSON 을 풀면 배열이 `List<dynamic>` 으로 나오므로 더미 데이터와 같은 타입으로 맞춘다.
+  /// 라벨 → `List<int>`, 책 → `List<List<int>>`. 형태가 예상과 다르면 손대지 않는다.
+  static Object? _normalizeBraille(Object? braille) {
+    if (braille is! List) return braille;
+    if (braille.every((cell) => cell is int)) return List<int>.from(braille);
+    if (braille.every((line) => line is List && line.every((cell) => cell is int))) {
+      return [for (final line in braille) List<int>.from(line as List)];
+    }
+    return braille;
+  }
+
+  static Map<String, dynamic> _failure(String error) => {'ok': false, 'error': error};
 }
 
 // ─────────────────────────────────────────────
-// 목 데이터
+// 목 데이터 (kUseMock 이 true 일 때만 쓰인다)
 //
 // 서버의 POST /process-mock 응답을 그대로 옮겨 놓은 값이다.
 // 손으로 적은 것이 아니라 서버 응답에서 뽑아냈으므로,
-// 나중에 실제 통신으로 바꿔도 화면 코드는 그대로 동작한다.
+// 더미 모드와 실서버를 오가도 화면 코드는 그대로 동작한다.
 //
 // 서버 쪽 원본: server/main.py 의 MOCK_RESULTS
 // ─────────────────────────────────────────────

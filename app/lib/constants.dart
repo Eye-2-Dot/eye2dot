@@ -8,6 +8,16 @@
 /// 지금은 로컬 개발용. 실제 배포 시 이 값만 바꾸면 된다.
 const String kServerBaseUrl = 'http://localhost:8000';
 
+/// 더미 모드 스위치
+///
+///   false (기본): 실서버(kServerBaseUrl)로 요청을 보낸다.
+///   true        : 서버에 아무것도 보내지 않고 앱 안의 더미 결과를 돌려준다.
+///                 서버가 꺼져 있어도 화면 개발을 이어갈 수 있다.
+///                 (사진이든 직접 입력이든 항상 같은 결과. 입력한 글자는 무시된다)
+///
+/// 바꾼 뒤에는 앱을 다시 실행할 것. 핫 리로드로는 const 값이 바뀌지 않을 수 있다.
+const bool kUseMock = false;
+
 /// 모드: 사물 이름을 점자 라벨로 뽑기
 const String kModeLabel = 'label';
 
