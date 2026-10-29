@@ -9,9 +9,10 @@ import json
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, Form, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -31,7 +32,7 @@ if not API_KEY:
     raise RuntimeError(".env 파일에 GEMINI_API_KEY가 없습니다")
 
 client = genai.Client(api_key=API_KEY)
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.8-flash"
 
 app = FastAPI(title="Eye 2 Dot API")
 
@@ -238,8 +239,20 @@ async def process_raw(request: Request, mode: str = "label"):
 # 엔드포인트 3: 브라우저 테스트용 (파일 업로드)
 # ─────────────────────────────────────────────
 @app.post("/process-file")
-async def process_file(mode: str = Form("label"), image: UploadFile = File(...)):
-    """/docs 화면에서 파일을 올려 테스트할 때 사용."""
+async def process_file(
+    image: UploadFile = File(...),
+    # 같은 이름 "mode"를 쿼리와 폼 양쪽에서 받는다. 위치가 달라 서로 겹치지 않는다.
+    mode_query: Optional[str] = Query(None, alias="mode"),
+    mode_form: Optional[str] = Form(None, alias="mode"),
+):
+    """/docs 화면에서 파일을 올려 테스트할 때, 그리고 앱이 실서버로 보낼 때 사용.
+
+    mode 우선순위: 쿼리(?mode=book) → 폼 필드 mode → 기본값 "label"
+    앱은 /process-mock과 똑같이 쿼리로 보내므로, 쿼리를 읽지 않으면
+    책 모드 요청이 조용히 라벨 모드로 처리된다.
+    빈 문자열(?mode=)은 값이 없는 것으로 보고 다음 순서로 넘어간다.
+    """
+    mode = mode_query or mode_form or "label"
     image_bytes = await image.read()
     return handle(image_bytes, mode)
 
@@ -427,3 +440,87 @@ def speech(text: str = ""):
         # 정확한 바이트 수는 자동으로 붙는 Content-Length를 쓰면 된다.
         headers={"X-Audio-Duration": f"{duration:.3f}"},
     )
+
+
+# ─────────────────────────────────────────────
+# 엔드포인트 6: 텍스트 점역 (앱의 "라벨 문구 직접 입력하기"용)
+#
+# 사진 없이 텍스트만 받아 braille.py로 점역한다. Gemini는 호출하지 않는다.
+# 응답 형식은 /process-file 성공 응답과 완전히 같으므로
+# 앱과 펌웨어는 사진으로 만든 결과와 똑같이 다루면 된다.
+# ─────────────────────────────────────────────
+
+# 모드별 입력 글자 수 상한. 두 모드는 다루는 글의 길이가 전혀 달라 따로 둔다.
+# 라벨: 사물 이름은 보통 6자 내외다. 점자 라벨 한 장에 들어갈 현실적인 상한으로 50자를 둔다.
+MAX_TRANSLATE_TEXT_LABEL = 50
+# 책: A4 한 장 분량을 고려한 값. 서버 예시 본문(MOCK_BOOK_TEXT, 244자)도 넉넉히 들어간다.
+MAX_TRANSLATE_TEXT_BOOK = 2000
+
+
+class TranslateRequest(BaseModel):
+    """/translate 요청 본문. 예: {"text": "우유", "mode": "label"}
+
+    필드가 빠지거나 null이어도 FastAPI 기본 오류(422)가 아니라
+    아래에서 직접 검사해 {ok, error, reason} 형식으로 답하도록 둘 다 생략 가능하게 둔다.
+    """
+    text: Optional[str] = None
+    mode: Optional[str] = None
+
+
+@app.post("/translate")
+def translate(body: TranslateRequest):
+    """텍스트 → 점자. 실패 시 400 + {ok: false, error, reason}.
+
+    사용법: POST /translate
+            Content-Type: application/json
+            Body: {"text": "우유", "mode": "label"}   (mode 생략 시 "label")
+
+    error 종류:
+        invalid_mode  : mode가 label/book이 아님
+        missing_text  : text가 비었거나 공백뿐이거나, 점자로 바꿀 글자가 없음(문장부호만 등)
+        text_too_long : 모드별 상한(라벨 50자 / 책 2000자) 초과
+    """
+    mode = body.mode or "label"
+    if mode not in VALID_MODES:
+        return _invalid_mode_response(mode)
+
+    # 앞뒤 공백만 뗀다. 책 본문 중간의 줄바꿈(\n)은 줄 나누기에 쓰이므로 그대로 둔다.
+    text = (body.text or "").strip()
+    if not text:
+        return JSONResponse(
+            {"ok": False, "error": "missing_text", "reason": "점역할 텍스트가 없습니다."},
+            status_code=400,
+        )
+
+    if mode == "book":
+        limit, subject = MAX_TRANSLATE_TEXT_BOOK, "책 본문은"
+    else:
+        limit, subject = MAX_TRANSLATE_TEXT_LABEL, "라벨 문구는"
+
+    if len(text) > limit:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "text_too_long",
+                "reason": f"{subject} {limit}자 이하여야 합니다 (입력: {len(text)}자)",
+            },
+            status_code=400,
+        )
+
+    # 문장부호는 braille.py가 건너뛰므로 "!!! ..." 같은 입력은 빈 칸(0)만 남는다.
+    # 점이 하나도 찍히지 않는 결과를 ok로 내보내면 펌웨어가 빈 라벨을 찍으려다 멈추므로 여기서 막는다.
+    # (셀 수가 0인지가 아니라 0이 아닌 셀이 있는지를 봐야 빈 칸만 남은 경우도 걸러진다)
+    if not any(text_to_braille(text)):
+        return JSONResponse(
+            {"ok": False, "error": "missing_text", "reason": "점자로 바꿀 수 있는 글자가 없습니다."},
+            status_code=400,
+        )
+
+    payload = {
+        "ok": True,
+        "text": text,
+        "reason": "직접 입력한 문구입니다.",
+        **_braille_fields(text, mode),
+    }
+    print(f"[점역] mode={mode} / {text} / {payload['cell_count']}셀")
+    return JSONResponse(payload)
