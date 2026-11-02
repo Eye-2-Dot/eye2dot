@@ -1,14 +1,18 @@
 /*
  * Eye 2 Dot — ESP32-CAM 카메라·통신 펌웨어
  *
- * 담당 범위: 촬영 → 서버 전송 → 응답 수신·파싱
+ * 담당 범위: 서버와의 통신 전부
  *   · 음성(speak.py)과 타각은 다른 담당이다.
  *   · 결과는 아래 "연결 지점" 함수 세 개로 넘겨준다.
  *
- * 팀 규격
- *   POST /process-file (또는 /process-mock)
- *   multipart/form-data — mode: label|book, image: JPEG
- *   응답 braille: 라벨은 [13, 41], 책은 [[...], [...]] (칸 = 비트마스크 정수)
+ * 두 가지 경로
+ *   ① 방아쇠 → 촬영 → POST /process-file → 결과 바로 받기
+ *   ② 폴링 — 1초마다 GET /jobs/next 로 "출력할 것 있나?" 묻기
+ *      (앱에서 "출력하기"를 누른 작업이 이쪽으로 온다)
+ *      작업이 오면 출력하고 POST /jobs/{id}/done 으로 완료 보고
+ *   폴링 API 규격은 POLLING_API.md 참고.
+ *
+ * 점자 형식: 라벨은 [13, 41], 책은 [[...], [...]] (칸 = 비트마스크 정수)
  *
  * PlatformIO 프로젝트 — 보드·PSRAM·라이브러리 설정은 platformio.ini 에 있다.
  * Wi-Fi와 서버 주소는 include/secrets.h 에 넣는다 (secrets.example.h 복사).
@@ -36,9 +40,15 @@ const int   SERVER_PORT   = 8000;
 
 const bool  USE_MOCK    = true;     // 개발 중 true → 완성 후 false
 const char* DEVICE_MODE = "label";  // 펌웨어 1 = "label", 펌웨어 2 = "book"
+const char* DEVICE_ID   = "fw1";    // 폴링 때 서버에 밝히는 이름 (펌웨어 2 = "fw2")
 
 const uint16_t HTTP_TIMEOUT_MS = 45000;  // Gemini 응답 대기 (앱과 동일)
 const int      MAX_RETRY       = 3;      // 네트워크 오류일 때만 재시도
+
+// 폴링
+const uint32_t POLL_INTERVAL_MS         = 1000;  // 평소: 1초마다
+const uint32_t POLL_INTERVAL_OFFLINE_MS = 5000;  // 서버가 안 받을 때: 5초마다
+const uint16_t POLL_TIMEOUT_MS          = 2000;  // 폴링 한 번에 기다리는 최대 시간
 
 // ─────────────────────────────────────────────
 // 핀
@@ -79,6 +89,19 @@ int     g_lineCount = 0;
 // ─────────────────────────────────────────────
 void printCell(uint8_t m);
 void copyLine(JsonArray src, int row);
+bool loadBraille(JsonVariant br);
+
+// ─────────────────────────────────────────────
+// 상태
+// ─────────────────────────────────────────────
+volatile bool g_triggerFlag = false;   // 방아쇠가 눌렸다는 표시 (인터럽트가 세움)
+uint32_t      g_lastPoll    = 0;
+bool          g_serverOnline = true;   // 폴링 상태 변화만 시리얼에 찍기 위해
+int           g_lastPollCode = 200;
+
+void IRAM_ATTR onTriggerPressed() {
+  g_triggerFlag = true;   // 폴링 중에 눌러도 놓치지 않도록 표시만 해 둔다
+}
 
 
 // ═════════════════════════════════════════════
@@ -92,8 +115,9 @@ void onRecognized(const char* text, const char* reason) {
 }
 
 // 2) 점자 데이터 준비 완료 → 타각 담당에게 (g_lines, g_lineLen, g_lineCount)
-void onBrailleReady() {
-  // TODO: 타각 담당과 연결
+//    출력이 끝나면 true, 실패하면 false 를 돌려준다 (폴링 작업의 완료 보고에 쓰임)
+bool onBrailleReady() {
+  // TODO: 타각 담당과 연결 — 타각이 끝날 때까지 기다린 뒤 결과를 돌려줄 것
   for (int i = 0; i < g_lineCount; i++) {
     Serial.printf("[점자 %d줄] ", i + 1);
     for (int j = 0; j < g_lineLen[i]; j++) printCell(g_lines[i][j]);
@@ -101,6 +125,7 @@ void onBrailleReady() {
     for (int j = 0; j < g_lineLen[i]; j++) Serial.printf("%d ", g_lines[i][j]);
     Serial.println(")");
   }
+  return true;
 }
 
 // 3) 실패 → 음성 담당에게 (오류 안내)
@@ -261,11 +286,21 @@ void handleResponse(const String& response) {
 
   onRecognized(doc["text"] | "", doc["reason"] | "");
 
-  // braille → g_lines 로 옮기기
-  JsonArray br = doc["braille"].as<JsonArray>();
-  g_lineCount = 0;
+  if (!loadBraille(doc["braille"])) {
+    onFailed("bad_braille", "점자 데이터가 비어 있거나 형식이 다릅니다.");
+    return;
+  }
+  onBrailleReady();
+}
 
-  if (br.size() > 0 && br[0].is<JsonArray>()) {
+// braille(1차원 또는 2차원) → g_lines 로 옮긴다. 비어 있으면 false
+bool loadBraille(JsonVariant brv) {
+  g_lineCount = 0;
+  if (!brv.is<JsonArray>()) return false;
+  JsonArray br = brv.as<JsonArray>();
+  if (br.size() == 0) return false;
+
+  if (br[0].is<JsonArray>()) {
     // 책: [[..], [..]]
     for (JsonArray line : br) {
       if (g_lineCount >= MAX_LINES) {
@@ -278,8 +313,7 @@ void handleResponse(const String& response) {
     // 라벨: [..] → 한 줄짜리로
     copyLine(br, g_lineCount++);
   }
-
-  onBrailleReady();
+  return true;
 }
 
 void copyLine(JsonArray src, int row) {
@@ -298,6 +332,112 @@ void copyLine(JsonArray src, int row) {
 void printCell(uint8_t m) {
   char s[4] = { (char)0xE2, (char)0xA0, (char)(0x80 | (m & 0x3F)), 0 };
   Serial.print(s);
+}
+
+
+// ─────────────────────────────────────────────
+// 폴링 — "출력할 것 있나?"
+// ─────────────────────────────────────────────
+
+// 완료 보고: POST /jobs/{id}/done  {"device","ok","error"}
+void reportDone(const char* jobId, bool ok, const char* error) {
+  String url = baseUrl();
+  url += "/jobs/";
+  url += jobId;
+  url += "/done";
+
+  JsonDocument body;
+  body["device"] = DEVICE_ID;
+  body["ok"]     = ok;
+  body["error"]  = error;
+  String json;
+  serializeJson(body, json);
+
+  for (int attempt = 1; attempt <= 2; attempt++) {
+    HTTPClient http;
+    http.begin(url);
+    http.setTimeout(POLL_TIMEOUT_MS);
+    http.addHeader("Content-Type", "application/json");
+    int code = http.POST(json);
+    http.end();
+    if (code > 0) {
+      Serial.printf("[폴링] 완료 보고 %s → HTTP %d\n", jobId, code);
+      return;
+    }
+    delay(500);
+  }
+  Serial.printf("[폴링] 완료 보고 실패 %s (서버가 나중에 다시 줄 수 있음)\n", jobId);
+}
+
+// 받은 작업 하나를 처리한다
+void handleJob(JsonObject job) {
+  const char* id = job["id"] | "";
+  if (id[0] == '\0') {
+    Serial.println("[폴링] id 없는 작업 — 무시");
+    return;
+  }
+  Serial.printf("\n── 출력 작업 %s ──\n", id);
+
+  onRecognized(job["text"] | "", job["reason"] | "");
+
+  if (!loadBraille(job["braille"])) {
+    onFailed("bad_braille", "점자 데이터가 비어 있거나 형식이 다릅니다.");
+    reportDone(id, false, "bad_braille");
+    return;
+  }
+
+  bool printed = onBrailleReady();
+  reportDone(id, printed, printed ? "" : "print_failed");
+}
+
+// 서버 상태가 바뀔 때만 시리얼에 알린다 (1초마다 같은 오류를 찍지 않도록)
+void notePollStatus(int code, const String& detail) {
+  bool online = code > 0;
+  if (online != g_serverOnline) {
+    if (online) Serial.println("[폴링] 서버 다시 연결됨");
+    else        Serial.printf("[폴링] 서버 응답 없음: %s (5초마다 재시도)\n", detail.c_str());
+    g_serverOnline = online;
+  }
+  if (online && code != g_lastPollCode) {
+    if (code == 404)      Serial.println("[폴링] 서버에 /jobs/next 가 없습니다 — POLLING_API.md 참고");
+    else if (code != 200) Serial.printf("[폴링] HTTP %d\n", code);
+    g_lastPollCode = code;
+  }
+}
+
+void pollJob() {
+  String url = baseUrl();
+  url += "/jobs/next?device=";
+  url += DEVICE_ID;
+
+  HTTPClient http;
+  http.begin(url);
+  http.setConnectTimeout(POLL_TIMEOUT_MS);
+  http.setTimeout(POLL_TIMEOUT_MS);
+  int code = http.GET();
+
+  if (code <= 0) {
+    notePollStatus(code, http.errorToString(code));
+    http.end();
+    return;
+  }
+  notePollStatus(code, "");
+  if (code != 200) {
+    http.end();
+    return;
+  }
+
+  String response = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  if (deserializeJson(doc, response)) {
+    Serial.println("[폴링] 응답을 읽지 못함");
+    return;
+  }
+  JsonVariant job = doc["job"];
+  if (job.isNull()) return;          // 할 일 없음 — 가장 흔한 경우
+  handleJob(job.as<JsonObject>());
 }
 
 
@@ -330,6 +470,7 @@ void setup() {
   Serial.println("\n=== Eye 2 Dot 카메라 ===");
 
   pinMode(PIN_TRIGGER, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_TRIGGER), onTriggerPressed, FALLING);
   pinMode(PIN_FLASH, OUTPUT);
   digitalWrite(PIN_FLASH, LOW);
 
@@ -353,16 +494,25 @@ void setup() {
                 USE_MOCK ? "목" : "실제 AI");
 
   checkHealth();
-  Serial.println("방아쇠를 누르면 촬영합니다.");
+  Serial.printf("방아쇠를 누르면 촬영합니다. 출력 작업은 %lu ms마다 확인합니다 (기기 이름: %s).\n",
+                (unsigned long)POLL_INTERVAL_MS, DEVICE_ID);
 }
 
 void loop() {
-  if (digitalRead(PIN_TRIGGER) == LOW) {
-    delay(30);                                  // 떨림 방지
-    if (digitalRead(PIN_TRIGGER) == LOW) {
-      runOnce();
-      while (digitalRead(PIN_TRIGGER) == LOW) delay(10);  // 손 뗄 때까지 대기
-    }
+  // ① 방아쇠가 우선
+  if (g_triggerFlag) {
+    delay(30);                 // 떨림이 끝나기를 기다림
+    runOnce();
+    g_triggerFlag = false;     // 처리하는 동안 눌린 것·떨림은 버린다 (중복 촬영 방지)
+    g_lastPoll = millis();
   }
+
+  // ② 폴링 — 서버가 응답하지 않으면 간격을 늘린다
+  uint32_t interval = g_serverOnline ? POLL_INTERVAL_MS : POLL_INTERVAL_OFFLINE_MS;
+  if (millis() - g_lastPoll >= interval) {
+    g_lastPoll = millis();
+    if (WiFi.status() == WL_CONNECTED) pollJob();
+  }
+
   delay(10);
 }
