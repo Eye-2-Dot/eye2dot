@@ -4,4 +4,6 @@ server/.venv/
 server/test_output.wav
 .venv/
 __pycache__/
-*.pyc*.code-workspace
+*.pyc
+*.code-workspace
+.vscode/
