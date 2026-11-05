@@ -7,3 +7,8 @@ __pycache__/
 *.pyc
 *.code-workspace
 .vscode/
+
+# 펌웨어: 비밀값, 빌드 결과, 컴퓨터마다 다른 포트 설정은 올리지 않는다 (어느 폴더든)
+**/secrets.h
+**/.pio/
+**/upload_ports.ini
