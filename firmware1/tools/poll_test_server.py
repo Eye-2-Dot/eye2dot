@@ -2,20 +2,26 @@
 Eye 2 Dot — 폴링 시험용 미니 서버
 
 실제 서버(server/main.py)를 건드리지 않고 ESP32 폴링을 시험하기 위한 것.
-POLLING_API.md 의 규격을 그대로 구현했다. 서버 담당은 이 파일을 참고해 main.py 에 옮기면 된다.
+docs/POLLING_API.md 의 규격을 그대로 구현했다. 서버 담당은 이 파일을 참고해 main.py 에 옮기면 된다.
 
-실행 (가상환경 켠 상태, 이 폴더 안에서):
+음성도 시험할 수 있다 (speech.py·인터넷 없이):
+    /print 로 넣은 작업에 speech_id 를 붙이고,
+    GET /speech/{speech_id} 와 GET /speech?text= 는 둘 다 1초짜리 440Hz 사인파 PCM 을 돌려준다
+    (8kHz, 8비트 unsigned, 모노, 무음 = 128 — 실제 서버의 /speech 와 같은 형식)
+
+실행 (저장소 루트의 .venv 를 켠 상태, 이 폴더 안에서):
     uvicorn poll_test_server:app --host 0.0.0.0 --port 8000
 
 ※ 실제 서버와 같은 8000번을 쓰므로 둘 중 하나만 켤 것.
 """
 
+import math
 import time
 import uuid
 from collections import deque
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Eye 2 Dot 폴링 시험 서버")
@@ -25,6 +31,14 @@ DEVICE_OF_MODE = {"label": "fw1", "book": "fw2"}
 queues = {"fw1": deque(), "fw2": deque()}  # 기다리는 작업
 in_progress = {}                           # 기기에 넘겨준 작업  id → {device, job, since}
 history = []                               # 끝난 작업 (최근 20개)
+speech_ids = set()                         # /print 가 붙여 준 speech_id
+
+# 시험용 음성: 1초짜리 440Hz 사인파 (8kHz, 8비트 unsigned, 무음 = 128)
+SAMPLE_RATE = 8000
+TEST_TONE = bytes(
+    int(round(128 + 100 * math.sin(2 * math.pi * 440 * n / SAMPLE_RATE)))
+    for n in range(SAMPLE_RATE)
+)
 
 
 class PrintRequest(BaseModel):
@@ -33,6 +47,7 @@ class PrintRequest(BaseModel):
     text: str = "우유"
     reason: str = "흰색 종이팩에 우유 표기가 있습니다."
     braille: list = Field(default_factory=lambda: [13, 41])
+    with_speech_id: bool = True   # false 로 보내면 speech_id 없이 → ESP32 가 /speech?text= 로 받는 경로 시험
 
 
 class DoneReport(BaseModel):
@@ -61,6 +76,9 @@ def enqueue(req: PrintRequest):
 
     job = {"id": uuid.uuid4().hex[:12], "mode": req.mode,
            "text": req.text, "reason": req.reason, "braille": req.braille}
+    if req.with_speech_id:
+        job["speech_id"] = "s" + job["id"]
+        speech_ids.add(job["speech_id"])
     queues[device].append(job)
     print(f"[대기열] {device} ← {job['id']} ({req.text})")
     return {"ok": True, "job_id": job["id"], "device": device,
@@ -104,3 +122,27 @@ def status():
                         for i, e in in_progress.items()},
         "history": history,
     }
+
+
+def pcm_response(pcm: bytes):
+    """실제 서버의 /speech 와 같은 모양: 본문 = raw PCM, Content-Length 자동, 재생 시간 헤더"""
+    return Response(content=pcm, media_type="application/octet-stream",
+                    headers={"X-Audio-Duration": f"{len(pcm) / SAMPLE_RATE:.3f}"})
+
+
+@app.get("/speech/{speech_id}")
+def speech_by_id(speech_id: str):
+    """speech_id 로 음성 받기 (실제 서버에는 아직 없음 — 서버 담당이 만들 자리)"""
+    if speech_id not in speech_ids:
+        return fail(404, "unknown_speech", "그런 speech_id 가 없습니다.")
+    print(f"[음성] /speech/{speech_id} → 440Hz 1초 ({len(TEST_TONE)} bytes)")
+    return pcm_response(TEST_TONE)
+
+
+@app.get("/speech")
+def speech_by_text(text: str = ""):
+    """text 로 음성 받기 (실제 서버에 이미 있는 주소). 시험 서버는 내용과 상관없이 440Hz"""
+    if not text.strip():
+        return fail(400, "missing_text", "읽어줄 텍스트가 없습니다.")
+    print(f"[음성] /speech?text={text} → 440Hz 1초 ({len(TEST_TONE)} bytes)")
+    return pcm_response(TEST_TONE)

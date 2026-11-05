@@ -12,7 +12,14 @@
 #include <util/atomic.h>
 
 #include "pins.h"
+#include "protocol.h"
 #include "speech.h"
+
+// 서버·ESP32 와 약속한 음성 형식(protocol.h)과 재생 설정이 어긋나면 컴파일을 멈춥니다.
+static_assert(SPEECH_SAMPLE_RATE == AUDIO_SAMPLE_RATE, "speech.h 와 protocol.h 의 샘플레이트가 다릅니다");
+static_assert(SPEECH_SILENCE == AUDIO_SILENCE, "speech.h 와 protocol.h 의 무음 값이 다릅니다");
+static_assert((SPEECH_STREAM_BUFFER & (SPEECH_STREAM_BUFFER - 1)) == 0, "링 버퍼 크기는 2의 거듭제곱이어야 합니다");
+static_assert(SPEECH_STREAM_BUFFER / 2 >= AUDIO_CHUNK_MAX, "링 버퍼가 음성 조각보다 너무 작습니다");
 
 // ─────────────────────────────────────────────
 // 사인 테이블
@@ -53,6 +60,7 @@ enum SpeechState : uint8_t {
   SPEECH_STOPPED = 0,   // 무음
   SPEECH_DC      = 1,   // 고정값 출력 (ISR은 아무것도 하지 않음)
   SPEECH_TONE    = 2,   // 사인파 재생 (ISR이 매 샘플 OCR1A를 갱신)
+  SPEECH_STREAM  = 3,   // PCM 스트리밍 (ISR이 링 버퍼에서 한 바이트씩 꺼내 OCR1A를 갱신)
 };
 
 // ─────────────────────────────────────────────
@@ -73,6 +81,48 @@ static volatile uint16_t phase = 0;
 static volatile uint16_t phaseInc = 0;
 
 static volatile SpeechState speechState = SPEECH_STOPPED;
+
+// ─────────────────────────────────────────────
+// PCM 스트리밍 링 버퍼
+//
+//   ringHead : 다음에 쓸 위치. loop() 쪽(speechStreamWrite)만 바꿉니다
+//   ringTail : 다음에 읽을 위치. ISR만 바꿉니다
+//   head == tail 이면 비어 있음. 한 칸은 늘 비워 두어 "가득 참"과 구분합니다.
+//
+// head·tail 은 16비트라 AVR에서 두 번에 나눠 읽고 씁니다.
+// 그래서 loop() 쪽에서 읽거나 쓸 때는 반드시 ATOMIC_BLOCK 안에서 합니다.
+// (쓰는 도중에 ISR이 끼면 반쯤 바뀐 값을 읽어 엉뚱한 바이트를 재생합니다)
+// ─────────────────────────────────────────────
+static const uint16_t RING_MASK = SPEECH_STREAM_BUFFER - 1;
+
+static uint8_t           ring[SPEECH_STREAM_BUFFER];
+static volatile uint16_t ringHead      = 0;
+static volatile uint16_t ringTail      = 0;
+static volatile bool     streamPlaying = false;   // 미리 채우기가 끝나 재생 중
+static volatile bool     streamEnded   = false;   // 더 올 데이터 없음
+
+// ─────────────────────────────────────────────
+// 알림음 패턴 — 삐(켜짐) / 쉼(꺼짐)을 count 번
+// 인터럽트가 아니라 loop() 의 speechUpdate() 가 millis() 로 진행합니다.
+// ─────────────────────────────────────────────
+struct AlertPattern {
+  uint16_t freq;
+  uint16_t onMs;
+  uint16_t offMs;
+  uint8_t  count;
+};
+
+static const AlertPattern ALERT_PATTERNS[] = {
+  { 880, 150, 120, 2 },   // ALERT_NETWORK : 높게 짧게 2번
+  { 880, 150, 120, 3 },   // ALERT_CAMERA  : 높게 짧게 3번
+  { 440, 600,   0, 1 },   // ALERT_GENERIC : 낮게 길게 1번 (모르는 종류도 이것)
+};
+
+static bool                alertActive = false;
+static bool                alertToneOn = false;
+static uint8_t             alertLeft   = 0;     // 남은 삐 횟수
+static uint32_t            alertNextMs = 0;     // 다음 단계로 넘어갈 시각
+static const AlertPattern* alertPat    = nullptr;
 
 
 // ─────────────────────────────────────────────
@@ -220,11 +270,20 @@ void speechStop() {
     phase       = 0;
     phaseInc    = 0;
 
+    // 스트리밍 중이었다면 남은 데이터도 버립니다 (즉시 멈춤)
+    ringHead      = 0;
+    ringTail      = 0;
+    streamPlaying = false;
+    streamEnded   = false;
+
     // 무음은 0이 아니라 128입니다.
     // 0으로 떨어뜨리면 듀티비가 50%에서 0%로 급변하면서
     // 스피커에서 "툭" 하는 잡음이 납니다.
     OCR1A = SPEECH_SILENCE;
   }
+
+  // 알림음 패턴도 멈춥니다 (패턴이 다음 삐를 다시 켜지 않도록)
+  alertActive = false;
 
   // PWM(Timer1)과 샘플 인터럽트(Timer2)는 계속 돌려둡니다.
   // 매번 껐다 켜면 그 순간 핀 상태가 튀면서 잡음이 생깁니다.
@@ -242,6 +301,133 @@ bool speechIsPlaying() {
 
 
 // ─────────────────────────────────────────────
+// PCM 스트리밍
+// ─────────────────────────────────────────────
+void speechStreamBegin() {
+  // 새 음성이 시작되면 알림음 패턴은 멈춥니다 (패턴이 사인파를 다시 켜지 않도록)
+  alertActive = false;
+
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    speechState   = SPEECH_STREAM;   // 이 줄부터 ISR이 링 버퍼를 봅니다 (지금은 비어 있어 무음)
+    phase         = 0;
+    phaseInc      = 0;
+    ringHead      = 0;
+    ringTail      = 0;
+    streamPlaying = false;
+    streamEnded   = false;
+    OCR1A         = SPEECH_SILENCE;
+  }
+}
+
+
+uint16_t speechStreamFree() {
+  uint16_t used;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    used = (ringHead - ringTail) & RING_MASK;
+  }
+  return (SPEECH_STREAM_BUFFER - 1) - used;   // 한 칸은 비워 둡니다
+}
+
+
+bool speechStreamWrite(const uint8_t* data, uint16_t len) {
+  if (speechState != SPEECH_STREAM || len > speechStreamFree()) {
+    return false;
+  }
+
+  // head 는 loop() 쪽만 바꾸므로 여기서 읽는 것은 안전합니다.
+  // 바이트를 먼저 다 써 두고, 마지막에 head 를 한 번에 옮깁니다.
+  // ISR은 head 앞까지만 읽으므로 반쯤 쓴 데이터를 재생하는 일이 없습니다.
+  uint16_t h = ringHead;
+  for (uint16_t i = 0; i < len; i++) {
+    ring[h] = data[i];
+    h = (h + 1) & RING_MASK;
+  }
+
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    ringHead = h;
+    // 미리 채우기: 절반 이상 모이면 재생 시작
+    if (!streamPlaying && ((h - ringTail) & RING_MASK) >= SPEECH_STREAM_BUFFER / 2) {
+      streamPlaying = true;
+    }
+  }
+  return true;
+}
+
+
+void speechStreamEnd() {
+  // 짧은 음성은 절반이 안 차도 끝 표시를 받으면 바로 재생합니다
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    streamEnded   = true;
+    streamPlaying = true;
+  }
+}
+
+
+bool speechStreamIsActive() {
+  return speechState == SPEECH_STREAM;
+}
+
+
+bool speechStreamFinished() {
+  if (speechState != SPEECH_STREAM || !streamEnded) {
+    return false;
+  }
+  bool empty;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    empty = (ringHead == ringTail);
+  }
+  return empty;
+}
+
+
+// ─────────────────────────────────────────────
+// 알림음
+//
+// 기존 사인파(speechPlayTone)로 삐 소리를 내고,
+// 쉬는 구간은 고정값 128(speechPlayDC = 무음)으로 둡니다.
+// delay() 없이 millis() 로 진행해서 그동안에도 시리얼을 계속 받습니다.
+// ─────────────────────────────────────────────
+void speechAlertPlay(uint8_t kind) {
+  uint8_t index = (kind >= ALERT_NETWORK && kind <= ALERT_GENERIC) ? kind - 1 : ALERT_GENERIC - 1;
+  alertPat    = &ALERT_PATTERNS[index];
+  alertLeft   = alertPat->count;
+  alertToneOn = true;
+  alertNextMs = millis() + alertPat->onMs;
+
+  speechPlayTone(alertPat->freq);   // 시험음이나 음성이 나던 중이어도 알림음이 우선입니다
+  alertActive = true;
+}
+
+
+bool speechAlertActive() {
+  return alertActive;
+}
+
+
+void speechUpdate() {
+  if (!alertActive || (int32_t)(millis() - alertNextMs) < 0) {
+    return;
+  }
+
+  if (alertToneOn) {
+    // 삐 하나가 끝남
+    alertLeft--;
+    if (alertLeft == 0) {
+      speechStop();                    // 패턴 끝 (alertActive 도 꺼집니다)
+      return;
+    }
+    speechPlayDC(SPEECH_SILENCE);      // 쉼
+    alertToneOn  = false;
+    alertNextMs += alertPat->offMs;
+  } else {
+    speechPlayTone(alertPat->freq);    // 다음 삐
+    alertToneOn  = true;
+    alertNextMs += alertPat->onMs;
+  }
+}
+
+
+// ─────────────────────────────────────────────
 // 샘플 인터럽트 — 125us마다 실행됩니다
 //
 // 여기에서 절대 하면 안 되는 것들:
@@ -250,9 +436,24 @@ bool speechIsPlaying() {
 //   부동소수점 연산  — FPU가 없어서 수백 사이클
 //   긴 반복문       — 125us 안에 못 끝내면 소리가 깨집니다
 //
-// 지금은 테이블 조회와 대입뿐입니다.
+// 지금은 테이블 조회·링 버퍼 읽기와 대입뿐입니다.
 // ─────────────────────────────────────────────
 ISR(TIMER2_COMPA_vect) {
+  // ── PCM 스트리밍 ──
+  // 링 버퍼에서 한 바이트를 꺼내 그대로 듀티비로 씁니다.
+  // 미리 채우기 전이거나 데이터가 늦게 와서 비어 있으면 무음(128)을 냅니다.
+  // (끊김은 생겨도 엉뚱한 값이 나와 잡음이 나지는 않습니다)
+  // ISR 안에서는 인터럽트가 이미 막혀 있으므로 16비트 head 를 그냥 읽어도 됩니다.
+  if (speechState == SPEECH_STREAM) {
+    if (streamPlaying && ringTail != ringHead) {
+      OCR1A    = ring[ringTail];
+      ringTail = (ringTail + 1) & RING_MASK;
+    } else {
+      OCR1A = SPEECH_SILENCE;
+    }
+    return;
+  }
+
   // 사인파 재생 중이 아니면 즉시 빠져나옵니다.
   // DC/정지 상태에서는 OCR1A를 건드리지 않아야
   // 메인이 써둔 값이 그대로 유지됩니다.
