@@ -22,6 +22,38 @@ static_assert((SPEECH_STREAM_BUFFER & (SPEECH_STREAM_BUFFER - 1)) == 0, "링 버
 static_assert(SPEECH_STREAM_BUFFER / 2 >= AUDIO_CHUNK_MAX, "링 버퍼가 음성 조각보다 너무 작습니다");
 
 // ─────────────────────────────────────────────
+// 소리 신호 표 — 높이·길이·횟수를 바꾸려면 여기만 고치면 됩니다
+//
+//   freq  : 삐 소리 높이 (Hz, 1 ~ SPEECH_MAX_FREQ)
+//   onMs  : 삐 한 번의 길이
+//   offMs : 삐와 삐 사이 쉬는 길이 (1번만 울리면 쓰이지 않음)
+//   count : 삐 횟수 (1 이상)
+//
+// 줄 순서는 speech.h 의 enum SpeechBeep 순서와 같아야 합니다.
+// ─────────────────────────────────────────────
+struct BeepPattern {
+  uint16_t freq;
+  uint16_t onMs;
+  uint16_t offMs;
+  uint8_t  count;
+};
+
+static const BeepPattern BEEP_PATTERNS[] = {
+  // freq  onMs  offMs  count
+  { 1000,  100,     0,     1 },   // BEEP_READY       : 준비·촬영 — 짧은 삐
+  {  400,   80,    80,     2 },   // BEEP_WRONG       : 잘못 누름 — 낮은 삐삐
+  {  300,  600,     0,     1 },   // BEEP_FAIL        : 서버·카메라 등 실패 — 낮고 긴 삐
+  { 1500,   80,    80,     2 },   // BEEP_DONE        : 타각 완료 — 높은 삐삐
+  {  400,  150,   150,     3 },   // BEEP_LOW_BATTERY : 배터리 부족 — 낮은 삐 3번
+};
+static_assert(sizeof(BEEP_PATTERNS) / sizeof(BEEP_PATTERNS[0]) == BEEP_COUNT,
+              "소리 신호 표의 줄 수가 speech.h 의 SpeechBeep 개수와 다릅니다");
+
+// ESP32 가 보내는 알림음 프레임(protocol.h 의 ALERT_NETWORK·CAMERA·GENERIC)을 낼 소리.
+// 프레임의 바이트 값은 그대로 두고, ATmega 쪽에서는 종류와 상관없이 모두 실패 소리로 냅니다.
+static const SpeechBeep ALERT_FRAME_BEEP = BEEP_FAIL;
+
+// ─────────────────────────────────────────────
 // 사인 테이블
 //
 // 값 = round(127.5 + 127.5 * sin(2*pi*i/256))
@@ -29,7 +61,7 @@ static_assert(SPEECH_STREAM_BUFFER / 2 >= AUDIO_CHUNK_MAX, "링 버퍼가 음성
 //
 // PROGMEM을 붙이면 플래시(256KB)에만 올라가고 RAM(8KB)은 쓰지 않습니다.
 // 붙이지 않으면 부팅할 때 RAM으로 복사되어 256바이트를 잡아먹습니다.
-// 나중에 오디오 버퍼를 잡아야 하므로 RAM은 아껴 둡니다.
+// 음성 링 버퍼(1KB)가 RAM 을 쓰므로 RAM은 아껴 둡니다.
 //
 // 읽을 때는 반드시 pgm_read_byte()를 써야 합니다.
 // 그냥 배열처럼 접근하면 AVR은 같은 주소의 RAM을 읽어서 쓰레기 값이 나옵니다.
@@ -102,27 +134,14 @@ static volatile bool     streamPlaying = false;   // 미리 채우기가 끝나 
 static volatile bool     streamEnded   = false;   // 더 올 데이터 없음
 
 // ─────────────────────────────────────────────
-// 알림음 패턴 — 삐(켜짐) / 쉼(꺼짐)을 count 번
+// 소리 신호 진행 상태 — 삐(켜짐) / 쉼(꺼짐)을 count 번 (표는 파일 맨 위)
 // 인터럽트가 아니라 loop() 의 speechUpdate() 가 millis() 로 진행합니다.
 // ─────────────────────────────────────────────
-struct AlertPattern {
-  uint16_t freq;
-  uint16_t onMs;
-  uint16_t offMs;
-  uint8_t  count;
-};
-
-static const AlertPattern ALERT_PATTERNS[] = {
-  { 880, 150, 120, 2 },   // ALERT_NETWORK : 높게 짧게 2번
-  { 880, 150, 120, 3 },   // ALERT_CAMERA  : 높게 짧게 3번
-  { 440, 600,   0, 1 },   // ALERT_GENERIC : 낮게 길게 1번 (모르는 종류도 이것)
-};
-
-static bool                alertActive = false;
-static bool                alertToneOn = false;
-static uint8_t             alertLeft   = 0;     // 남은 삐 횟수
-static uint32_t            alertNextMs = 0;     // 다음 단계로 넘어갈 시각
-static const AlertPattern* alertPat    = nullptr;
+static bool               alertActive = false;
+static bool               alertToneOn = false;
+static uint8_t            alertLeft   = 0;     // 남은 삐 횟수
+static uint32_t           alertNextMs = 0;     // 삐↔쉼이 바뀔 시각
+static const BeepPattern* alertPat    = nullptr;
 
 
 // ─────────────────────────────────────────────
@@ -130,7 +149,7 @@ static const AlertPattern* alertPat    = nullptr;
 // ─────────────────────────────────────────────
 void speechInit() {
   // ── 출력 핀을 출력 모드로 ──
-  // COM1A1만 켜고 이걸 빼먹으면 파형이 핀 밖으로 나가지 않습니다.
+  // COM1A1만 켜고 pinMode(OUTPUT)를 빼먹으면 파형이 핀 밖으로 나가지 않습니다.
   // 소리가 아예 안 날 때 가장 먼저 의심할 부분입니다.
   //   핀 11 = PB5 이므로 DDRB의 5번 비트
   pinMode(PIN_AUDIO, OUTPUT);
@@ -156,6 +175,7 @@ void speechInit() {
     //   사람이 들을 수 있는 한계(약 20kHz)보다 훨씬 높아서
     //   캐리어 자체는 들리지 않고, RC 필터로 쉽게 깎아낼 수 있습니다.
     // ─────────────────────────────────────────
+    // 핀 방향(출력 모드)은 위 pinMode 에서 설정함
     TCCR1A = (1 << COM1A1) | (1 << WGM10);
     TCCR1B = (1 << WGM12)  | (1 << CS10);
     TCNT1  = 0;
@@ -200,9 +220,9 @@ void speechInit() {
 // speechPlayTone() — 사인파 재생 시작
 // ─────────────────────────────────────────────
 void speechPlayTone(uint16_t freq) {
-  // 범위 제한.
-  // 4000Hz(나이퀴스트)를 넘으면 앨리어싱이 생겨
-  // 의도한 것과 전혀 다른 낮은 음이 들립니다.
+  // 범위 제한. 상한은 3000Hz 입니다(SPEECH_MAX_FREQ, 이유는 speech.h 참고).
+  // 나이퀴스트(4000Hz)에 가까울수록 파형이 찌그러지고, 정확히 4000Hz 면 무음,
+  // 넘으면 앨리어싱으로 의도한 것과 전혀 다른 낮은 음이 들립니다.
   if (freq == 0) {
     speechStop();
     return;
@@ -229,7 +249,7 @@ void speechPlayTone(uint16_t freq) {
   //   ISR에는 덧셈과 시프트만 남깁니다.
   //
   // uint32_t 로 올리는 이유:
-  //   4000 * 65536 = 262,144,000. uint16_t로는 한참 넘칩니다.
+  //   3000 * 65536 = 196,608,000. uint16_t(최대 65,535)로는 한참 넘칩니다.
   uint16_t inc = (uint16_t)(((uint32_t)freq * 65536UL) / SPEECH_SAMPLE_RATE);
 
   // ── 원자적으로 반영 ──
@@ -282,7 +302,7 @@ void speechStop() {
     OCR1A = SPEECH_SILENCE;
   }
 
-  // 알림음 패턴도 멈춥니다 (패턴이 다음 삐를 다시 켜지 않도록)
+  // 소리 신호 패턴도 멈춥니다 (패턴이 다음 삐를 다시 켜지 않도록)
   alertActive = false;
 
   // PWM(Timer1)과 샘플 인터럽트(Timer2)는 계속 돌려둡니다.
@@ -304,7 +324,7 @@ bool speechIsPlaying() {
 // PCM 스트리밍
 // ─────────────────────────────────────────────
 void speechStreamBegin() {
-  // 새 음성이 시작되면 알림음 패턴은 멈춥니다 (패턴이 사인파를 다시 켜지 않도록)
+  // 새 음성이 시작되면 소리 신호 패턴은 멈춥니다 (패턴이 사인파를 다시 켜지 않도록)
   alertActive = false;
 
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
@@ -381,21 +401,30 @@ bool speechStreamFinished() {
 
 
 // ─────────────────────────────────────────────
-// 알림음
+// 소리 신호
 //
 // 기존 사인파(speechPlayTone)로 삐 소리를 내고,
 // 쉬는 구간은 고정값 128(speechPlayDC = 무음)으로 둡니다.
 // delay() 없이 millis() 로 진행해서 그동안에도 시리얼을 계속 받습니다.
+// 패턴이 끝나면 speechStop() 으로 무음(128)에 돌아갑니다.
 // ─────────────────────────────────────────────
-void speechAlertPlay(uint8_t kind) {
-  uint8_t index = (kind >= ALERT_NETWORK && kind <= ALERT_GENERIC) ? kind - 1 : ALERT_GENERIC - 1;
-  alertPat    = &ALERT_PATTERNS[index];
+void speechBeep(SpeechBeep kind) {
+  if (kind >= BEEP_COUNT) {
+    kind = BEEP_FAIL;   // 표에 없는 번호는 실패 소리로
+  }
+  alertPat    = &BEEP_PATTERNS[kind];
   alertLeft   = alertPat->count;
   alertToneOn = true;
   alertNextMs = millis() + alertPat->onMs;
 
-  speechPlayTone(alertPat->freq);   // 시험음이나 음성이 나던 중이어도 알림음이 우선입니다
+  speechPlayTone(alertPat->freq);   // 시험음이나 음성이 나던 중이어도 소리 신호가 우선입니다
   alertActive = true;
+}
+
+
+void speechAlertPlay(uint8_t kind) {
+  (void)kind;   // 종류는 지금 소리에 쓰지 않습니다 (맨 위 ALERT_FRAME_BEEP 참고)
+  speechBeep(ALERT_FRAME_BEEP);
 }
 
 
