@@ -256,7 +256,7 @@ x-audio-duration: 1.500
 
 ### 펌웨어 재생 가이드 (ATmega2560)
 
-> 아래 코드는 형식을 설명하기 위한 **참고 구현이며, 실제 하드웨어에서 검증하지 않았다.** 핀·타이머·통신 방식은 회로에 맞게 조정할 것.
+> 아래 코드는 형식을 설명하기 위한 **참고 구현이며, 실제 하드웨어에서 검증하지 않았다.** 핀과 타이머 설정은 펌웨어(`firmware1/src/speech.cpp`)와 같다. 링 버퍼와 통신 부분은 아직 펌웨어에 없으므로 구현할 때 회로에 맞게 조정할 것.
 
 #### 전체 흐름
 
@@ -278,8 +278,11 @@ x-audio-duration: 1.500
 
 #### 타이머와 인터럽트 (Arduino Mega, 16MHz)
 
-- **Timer2**: 8비트 Fast PWM, 분주 없음 → 16MHz ÷ 256 = **62.5kHz** 반송파 (가청 주파수 밖). 출력은 **10번 핀(OC2A)**.
-- **Timer1**: CTC 모드, 분주 없음, `OCR1A = 1999` → 16MHz ÷ 2000 = **정확히 8000Hz**마다 인터럽트.
+펌웨어(`firmware1/src/speech.cpp`)와 같은 설정이다.
+
+- **Timer1**: 8비트 Fast PWM, 분주 없음 → 16MHz ÷ 256 = **62.5kHz** 반송파 (가청 주파수 밖). 출력은 **11번 핀(OC1A, PB5)**. 샘플 값(0~255)을 `OCR1A`에 그대로 쓰면 듀티비가 된다.
+- **Timer2**: CTC 모드(카운터가 정해진 값에 닿으면 0으로 돌아가며 인터럽트), 분주 8, `OCR2A = 249` → 16MHz ÷ (8 × 250) = **정확히 8000Hz**마다 인터럽트.
+- **Timer0**은 `millis()`·`delay()`가 쓰므로 건드리지 않는다.
 
 ```cpp
 #include <util/atomic.h>
@@ -296,31 +299,32 @@ static volatile uint16_t tail = 0;      // 다음에 읽을 위치. 인터럽트
 static volatile bool playing = false;
 
 void audioBegin() {
-  pinMode(10, OUTPUT);
+  pinMode(11, OUTPUT);                  // OC1A. 출력 모드가 아니면 PWM이 핀 밖으로 나가지 않는다
   noInterrupts();
 
-  // Timer2: 8비트 Fast PWM, 분주 없음 → 62.5kHz, 10번 핀(OC2A) 출력
-  TCCR2A = _BV(COM2A1) | _BV(WGM21) | _BV(WGM20);
-  TCCR2B = _BV(CS20);
-  OCR2A  = SILENCE;
-
-  // Timer1: CTC, 분주 없음 → 16MHz / (1999 + 1) = 8000Hz마다 인터럽트
-  TCCR1A = 0;
+  // Timer1: 8비트 Fast PWM, 분주 없음 → 62.5kHz, 11번 핀(OC1A) 출력
+  TCCR1A = _BV(COM1A1) | _BV(WGM10);
   TCCR1B = _BV(WGM12) | _BV(CS10);
-  OCR1A  = F_CPU / SAMPLE_RATE - 1;     // 1999
   TCNT1  = 0;
-  TIMSK1 = _BV(OCIE1A);
+  OCR1A  = SILENCE;
+
+  // Timer2: CTC, 분주 8 → 16MHz / (8 * (249 + 1)) = 8000Hz마다 인터럽트
+  TCCR2A = _BV(WGM21);
+  TCCR2B = _BV(CS21);
+  TCNT2  = 0;
+  OCR2A  = F_CPU / 8 / SAMPLE_RATE - 1; // 249
+  TIMSK2 = _BV(OCIE2A);
 
   interrupts();
 }
 
 // 1/8000초마다: 샘플 한 바이트를 그대로 PWM 듀티로 쓴다
-ISR(TIMER1_COMPA_vect) {
+ISR(TIMER2_COMPA_vect) {
   if (playing && tail != head) {
-    OCR2A = buf[tail];
+    OCR1A = buf[tail];
     tail = (tail + 1) & BUF_MASK;
   } else {
-    OCR2A = SILENCE;                    // 재생 전이거나 데이터가 늦으면 무음
+    OCR1A = SILENCE;                    // 재생 전이거나 데이터가 늦으면 무음
   }
 }
 
@@ -359,13 +363,28 @@ void audioUpdate(uint32_t received, uint32_t total) {
 }
 ```
 
-- **함께 쓸 수 없는 기능**: Timer2를 쓰므로 `tone()`과 9·10번 핀의 `analogWrite()`, Timer1을 쓰므로 11·12번 핀의 `analogWrite()`. 사용하는 라이브러리가 이 타이머를 쓰는지도 확인할 것.
+- **함께 쓸 수 없는 기능** (Timer1·Timer2는 오디오 전용):
+  - Timer2: `tone()`, 9·10번 핀의 `analogWrite()`. 특히 10번 핀(OC2A)에 `analogWrite()`를 하면 `OCR2A`가 바뀌어 **샘플레이트가 달라진다.**
+  - Timer1: 11번 핀(오디오 출력 자체), 12번 핀의 `analogWrite()`.
+  - Timer0: `millis()`·`delay()`용이므로 설정을 바꾸지 말 것.
+  - 사용하는 라이브러리가 이 타이머를 쓰는지도 확인할 것. 핀 배치와 금지 목록은 `firmware1/include/pins.h`에도 적어 두었다.
 - 재생하지 않을 때도 PWM을 끄지 않고 무음(128)으로 켜 둔다. 출력이 0V와 중간 전압 사이를 갑자기 오가면 "딱" 소리가 나기 때문이다.
 
 #### 출력 회로
 
-- PWM 핀으로 스피커를 직접 구동하지 말 것 (핀 허용 전류를 넘어 칩이 손상될 수 있다). **RC 저역통과 필터 → 앰프(PAM8403, LM386 등) → 스피커** 순서로 연결한다.
-- RC 필터 예: **1kΩ + 47nF** → 차단 주파수 약 3.4kHz. 음성 대역(8kHz 샘플이 담을 수 있는 상한 4kHz)은 통과시키고 62.5kHz PWM 반송파는 걸러낸다.
+- PWM 핀으로 스피커를 직접 구동하지 말 것 (핀 허용 전류를 넘어 칩이 손상될 수 있다). **RC 저역통과 필터 → 커플링 커패시터 → LM386 앰프 모듈 → 스피커** 순서로 연결한다.
+
+```
+핀 11 ──[1kΩ]──┬──(+)[10µF](−)──▶ LM386 모듈 IN
+               │
+           [0.047µF]
+               │
+              GND           ※ Mega GND · 앰프 모듈 GND · 앰프 전원 GND는 모두 공통으로 연결
+```
+
+- **RC 필터**: 1kΩ 직렬, 0.047µF(47nF)는 저항 뒤에서 GND로. 차단 주파수 약 3.4kHz. 음성 대역(8kHz 샘플이 담을 수 있는 상한 4kHz)은 통과시키고 62.5kHz PWM 반송파는 걸러낸다.
+- **10µF 커플링 커패시터**(직류는 막고 소리 성분만 통과시키는 부품): 필터 출력에는 무음일 때도 약 2.5V의 직류가 실려 있으므로 앰프 입력 전에 막는다. 전해 커패시터라면 **+극을 필터 쪽**(전압이 높은 쪽)으로 둔다.
+- **LM386 모듈 볼륨은 최소에서 시작**해 조금씩 올린다. 필터 출력은 최대 약 5Vpp라 LM386 입력에 비해 크다.
 
 #### URL 인코딩 (네트워크 칩 쪽, 예: ESP32 Arduino)
 
