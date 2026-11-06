@@ -1,9 +1,9 @@
 /*
  * Eye 2 Dot — ESP32-CAM
- * link.cpp — ATmega2560 으로 점자·음성·알림음 보내기 (ESP32 쪽)
+ * link.cpp — ATmega2560 과 주고받기 (ESP32 쪽)
  *
  * 프레임을 만드는 일은 common/protocol.h 의 함수(두 칩 공용)가 하고,
- * 여기서는 Serial2 로 내보내고 응답을 기다리기만 한다.
+ * 여기서는 Serial2 로 내보내고, 응답과 촬영 요청('C')을 읽기만 한다.
  */
 
 #include <Arduino.h>
@@ -13,10 +13,17 @@
 // ATmega 와 연결된 시리얼. ESP32-CAM 은 기본 Serial2 핀(16·17)을 PSRAM 이 쓰므로 14·15 로 옮긴다
 static HardwareSerial& LINK = Serial2;
 
+// ATmega 가 보낸 'C' 를 아직 처리하지 않았음
+static bool capturePending = false;
+
 // 함수 선언
-static void sendFrame(uint8_t type, const uint8_t* payload, uint16_t len);
-static int  readReply(uint32_t deadline);
-static int  sendAudio(const uint8_t* audio, size_t len, uint32_t deadline);
+static void       sendFrame(uint8_t type, const uint8_t* payload, uint16_t len);
+static int        readReply(uint32_t deadline);
+static int        sendAudio(const uint8_t* audio, size_t len, uint32_t deadline);
+static int        waitResult(uint32_t deadline);
+static bool       captureFollows();
+static LinkResult resultOf(int reply);
+static void       scanForCapture();
 
 
 void linkBegin() {
@@ -24,13 +31,55 @@ void linkBegin() {
   Serial.printf("ATmega 연결: Serial2 %lu bps (RX = GPIO%d, TX = GPIO%d)\n",
                 (unsigned long)LINK_BAUD, PIN_LINK_RX, PIN_LINK_TX);
   if (ATMEGA_CONNECTED) {
-    Serial.println("ATMEGA_CONNECTED = true — ATmega 응답('R'/'D'/'E')을 기다립니다");
+    Serial.println("ATMEGA_CONNECTED = true — ATmega 응답('R'/'D'/'E')과 촬영 요청('C')을 받습니다");
   } else {
-    Serial.println("ATMEGA_CONNECTED = false — ESP32 단독 시험 모드 (응답을 기다리지 않음)");
-    Serial.println("  두 보드를 연결했다면 include/link.h 의 ATMEGA_CONNECTED 를 true 로 바꾸세요");
+    Serial.println("ATMEGA_CONNECTED = false — ESP32 단독 시험 모드 (응답을 기다리지 않고 'C' 도 무시)");
+    Serial.println("  두 보드를 연결해 쓸 때는 include/link.h 의 ATMEGA_CONNECTED 를 true(기본값)로 되돌리세요");
   }
 }
 
+
+// ─────────────────────────────────────────────
+// 촬영 요청 ('C')
+// ─────────────────────────────────────────────
+
+// 쌓인 바이트를 훑어 'C' 가 있으면 표시한다. 나머지는 버린다 (작업 밖에서는 쓸모없는 찌꺼기)
+static void scanForCapture() {
+  while (LINK.available() > 0) {
+    int c = LINK.read();
+    // 단독 시험 모드에서는 선이 없어 잡음이 'C' 로 읽힐 수 있으므로 무시한다
+    if (c == CMD_CAPTURE && ATMEGA_CONNECTED) {
+      capturePending = true;
+    }
+  }
+}
+
+
+bool linkTakeCapture() {
+  scanForCapture();
+  bool c = capturePending;
+  capturePending = false;
+  return c;
+}
+
+
+bool linkCapturePending() {
+  scanForCapture();
+  return capturePending;
+}
+
+
+void linkDiscardInput() {
+  while (LINK.available() > 0) {
+    LINK.read();
+  }
+  capturePending = false;
+}
+
+
+// ─────────────────────────────────────────────
+// 보내기
+// ─────────────────────────────────────────────
 
 // 프레임 하나를 만들어 보낸다
 static void sendFrame(uint8_t type, const uint8_t* payload, uint16_t len) {
@@ -63,10 +112,12 @@ void linkSendAlert(uint8_t kind) {
 }
 
 
-bool linkSendJob(const BrailleData& braille, const uint8_t* audio, size_t audioLen) {
-  // 지난 작업에서 늦게 도착한 'R' 등이 남아 있으면 버린다
-  while (LINK.available() > 0) {
-    LINK.read();
+LinkResult linkSendJob(const BrailleData& braille, const uint8_t* audio, size_t audioLen) {
+  // 보내기 직전에 'C' 가 와 있으면 이 작업은 보내지 않는다 (재촬영이 우선).
+  // 그 밖에 쌓인 바이트(지난 작업에서 늦게 도착한 'R' 등)는 여기서 버려진다.
+  if (linkCapturePending()) {
+    Serial.println("[ATmega] 촬영 요청('C')이 와 있음 — 이 작업은 보내지 않음");
+    return LINK_CAPTURE;
   }
 
   // ── 1) 점자 ──
@@ -86,37 +137,21 @@ bool linkSendJob(const BrailleData& braille, const uint8_t* audio, size_t audioL
 
   if (!ATMEGA_CONNECTED) {
     Serial.println("[ATmega] 단독 시험 모드 — 응답을 기다리지 않고 성공으로 처리");
-    return true;
+    return LINK_DONE;
   }
 
-  // ── 3) 결과 기다리기 ('R' 이나 잡음은 무시) ──
+  // ── 3) 결과 기다리기 ──
   if (reply < 0) {
-    Serial.printf("[ATmega] 확인/취소 버튼을 기다리는 중 (최대 %lu초)…\n",
+    Serial.printf("[ATmega] 출력 버튼을 기다리는 중 (최대 %lu초)…\n",
                   (unsigned long)(LINK_REPLY_TIMEOUT_MS / 1000));
-    while (true) {
-      int c = readReply(deadline);
-      if (c < 0 || c == REPLY_DONE || c == REPLY_ERROR) {
-        reply = c;
-        break;
-      }
-    }
+    reply = waitResult(deadline);
   }
-
-  if (reply == REPLY_DONE) {
-    Serial.println("[ATmega] ← 'D' 출력 완료");
-    return true;
-  }
-  if (reply == REPLY_ERROR) {
-    Serial.println("[ATmega] ← 'E' 실패·취소");
-    return false;
-  }
-  Serial.println("[ATmega] 응답 없음 — 시간 초과, 실패로 처리");
-  return false;
+  return resultOf(reply);
 }
 
 
 // 음성을 보낸다. 'R' 을 받을 때마다 조각 하나.
-// 도중에 'D'/'E' 가 오면 (재생 중에 버튼을 누름) 남은 조각은 보내지 않고 그 값을 돌려준다. 없으면 -1
+// 도중에 'D'/'E'/'C' 가 오면 (재생 중에 버튼을 누름) 남은 조각은 보내지 않고 그 값을 돌려준다. 없으면 -1
 static int sendAudio(const uint8_t* audio, size_t len, uint32_t deadline) {
   uint8_t start[4];
   linkPutU32(start, (uint32_t)len);
@@ -136,7 +171,7 @@ static int sendAudio(const uint8_t* audio, size_t len, uint32_t deadline) {
         Serial.println("[ATmega] 'R' 이 오지 않음 — 음성 전송 중단");
         break;
       }
-      if (c == REPLY_DONE || c == REPLY_ERROR) {
+      if (c == REPLY_DONE || c == REPLY_ERROR || c == CMD_CAPTURE) {
         reply = c;
         Serial.printf("[ATmega] 음성 도중 '%c' — 남은 조각은 보내지 않음\n", c);
         break;
@@ -162,4 +197,50 @@ static int sendAudio(const uint8_t* audio, size_t len, uint32_t deadline) {
     Serial.println("[ATmega] → 음성 끝");
   }
   return reply;
+}
+
+
+// 'D'/'E'/'C' 중 하나가 오거나 시간이 다 될(-1) 때까지 기다린다. 'R' 과 잡음은 무시
+static int waitResult(uint32_t deadline) {
+  while (true) {
+    int c = readReply(deadline);
+    if (c < 0 || c == REPLY_DONE || c == REPLY_ERROR || c == CMD_CAPTURE) {
+      return c;
+    }
+  }
+}
+
+
+// 'E' 바로 뒤에 'C' 가 따라오는지 잠깐 본다 (재촬영: ATmega 는 'E' 'C' 를 연달아 보낸다)
+static bool captureFollows() {
+  uint32_t until = millis() + LINK_CAPTURE_FOLLOW_MS;
+  while (true) {
+    int c = readReply(until);
+    if (c < 0) {
+      return false;
+    }
+    if (c == CMD_CAPTURE) {
+      return true;
+    }
+  }
+}
+
+
+// 받은 응답 → 결과
+static LinkResult resultOf(int reply) {
+  if (reply == CMD_CAPTURE || (reply == REPLY_ERROR && captureFollows())) {
+    capturePending = true;   // 다음 loop 에서 linkTakeCapture() 가 true → 새로 촬영
+    Serial.println("[ATmega] ← 'C' 재촬영 — 이 작업은 취소");
+    return LINK_CAPTURE;
+  }
+  if (reply == REPLY_DONE) {
+    Serial.println("[ATmega] ← 'D' 출력 완료");
+    return LINK_DONE;
+  }
+  if (reply == REPLY_ERROR) {
+    Serial.println("[ATmega] ← 'E' 실패");
+    return LINK_ERROR;
+  }
+  Serial.println("[ATmega] 응답 없음 — 시간 초과, 실패로 처리");
+  return LINK_TIMEOUT;
 }

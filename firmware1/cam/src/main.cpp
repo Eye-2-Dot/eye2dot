@@ -2,26 +2,29 @@
  * Eye 2 Dot — ESP32-CAM 카메라·통신 펌웨어
  *
  * 담당 범위: 촬영, 서버와의 통신 전부, ATmega 로 결과 넘기기
- *   · 음성 재생·버튼·타각은 ATmega2560(firmware1/mega)이 한다.
+ *   · 버튼·음성 재생·타각은 ATmega2560(firmware1/mega)이 한다.
  *   · ESP32 는 서버의 JSON·음성을 작은 바이트 묶음(프레임)으로 바꿔 Serial2 로 넘긴다.
  *
- * 두 가지 경로
- *   ① 방아쇠 → 촬영 → POST /process-file → 결과 바로 받기
- *   ② 폴링 — 1초마다 GET /jobs/next 로 "출력할 것 있나?" 묻기
- *      (앱에서 "출력하기"를 누른 작업이 이쪽으로 온다)
- *      작업이 오면 출력하고 POST /jobs/{id}/done 으로 완료 보고
+ * 작업이 들어오는 두 입구 (뒷부분은 같다)
+ *   ① 촬영 — ATmega 가 촬영 버튼(D31)을 받아 'C' 를 보내면
+ *            → 촬영 → POST /process-file → 결과 바로 받기
+ *            (ATmega 없이 시험할 때는 USB 시리얼에서 'c')
+ *   ② 폴링 — 할 일이 없을 때 1초마다 GET /jobs/next 로 "출력할 것 있나?" 묻기
+ *            (앱에서 "출력하기"를 누른 작업이 이쪽으로 온다)
+ *            작업이 오면 출력하고 POST /jobs/{id}/done 으로 결과 보고
  *   폴링·음성 API 규격은 저장소 루트의 docs/POLLING_API.md 참고.
  *
  * 결과 하나를 처리하는 순서
- *   점자 읽기 → 음성 받기 ("{text}. {reason}", 실패하면 음성 없이) → ATmega 로 점자·음성 → 'D'/'E'
+ *   점자 읽기 → 음성 받기 ("{text}입니다. {reason}", 실패하면 음성 없이) → ATmega 로 점자·음성
+ *   → 'D' 완료 / 'E' 실패 / 'C' 재촬영 (작업을 취소하고 새로 촬영)
  *   서버가 실패로 답하면 → 고정 안내 문구 음성만 (줄 수 0 점자 프레임 + 음성)
- *   서버에 닿지 않거나 촬영 실패 → 알림음 프레임
+ *   서버에 닿지 않거나 촬영 실패 → 알림음 프레임 (ATmega 는 실패음)
  *
  * 점자 형식: 라벨은 [13, 41], 책은 [[...], [...]] (칸 = 비트마스크 정수)
  *
  * 파일 구성
  *   main.cpp  전체 흐름 (이 파일)      cam.cpp  카메라·LED
- *   net.cpp   Wi-Fi·서버·음성 받기     link.cpp ATmega 로 보내기
+ *   net.cpp   Wi-Fi·서버·음성 받기     link.cpp ATmega 와 주고받기
  *
  * PlatformIO 프로젝트 — 보드·PSRAM·라이브러리 설정은 platformio.ini 에 있다.
  * Wi-Fi와 서버 주소는 include/secrets.h 에 넣는다 (secrets.example.h 복사).
@@ -44,13 +47,9 @@ const uint32_t POLL_INTERVAL_MS         = 1000;  // 평소: 1초마다
 const uint32_t POLL_INTERVAL_OFFLINE_MS = 5000;  // 서버가 안 받을 때: 5초마다
 
 // 음성으로 읽을 문장
-const int         SPEECH_MAX_CHARS = 60;   // "{text}. {reason}" 이 이보다 길면 뒤를 자른다 (글자 수)
+//   서버 /speech 가 받는 최대 글자 수가 200자라서, 넘으면 뒤를 자른다 (글자 수 기준)
+const int         SPEECH_MAX_CHARS = 200;
 const char* const FAIL_SPEECH_TEXT = "인식하지 못했어요. 다시 찍어 주세요";
-
-// ─────────────────────────────────────────────
-// 핀
-// ─────────────────────────────────────────────
-const int PIN_TRIGGER = 13;  // 방아쇠 버튼 (누르면 GND)
 
 // ─────────────────────────────────────────────
 // 받은 점자 데이터 (라벨도 "한 줄짜리"로 저장해 형태를 통일)
@@ -69,14 +68,9 @@ const char* processResult(JsonVariantConst r);
 // ─────────────────────────────────────────────
 // 상태
 // ─────────────────────────────────────────────
-volatile bool g_triggerFlag = false;   // 방아쇠가 눌렸다는 표시 (인터럽트가 세움)
-uint32_t      g_lastPoll    = 0;
-bool          g_serverOnline = true;   // 폴링 상태 변화만 시리얼에 찍기 위해
-int           g_lastPollCode = 200;
-
-void IRAM_ATTR onTriggerPressed() {
-  g_triggerFlag = true;   // 폴링 중에 눌러도 놓치지 않도록 표시만 해 둔다
-}
+uint32_t g_lastPoll      = 0;
+bool     g_serverOnline  = true;   // 폴링 상태 변화만 시리얼에 찍기 위해
+int      g_lastPollCode  = 200;
 
 
 // ─────────────────────────────────────────────
@@ -84,6 +78,26 @@ void IRAM_ATTR onTriggerPressed() {
 // ─────────────────────────────────────────────
 void logFailure(const char* error, const char* reason) {
   Serial.printf("[실패] %s / %s\n", error, reason);
+}
+
+
+// ─────────────────────────────────────────────
+// 촬영 요청 — ATmega 의 'C' 또는 USB 시리얼 'c' (ATmega 없이 시험할 때)
+// ─────────────────────────────────────────────
+bool usbCaptureCommand() {
+  bool c = false;
+  while (Serial.available() > 0) {
+    char ch = Serial.read();
+    if (ch == 'c' || ch == 'C') c = true;
+  }
+  return c;
+}
+
+// 둘 다 읽어 비운다 (한쪽만 읽으면 남은 쪽이 다음 바퀴에 촬영을 한 번 더 일으킴)
+bool captureRequested() {
+  bool fromAtmega = linkTakeCapture();
+  bool fromUsb    = usbCaptureCommand();
+  return fromAtmega || fromUsb;
 }
 
 
@@ -109,16 +123,18 @@ String speechIdOf(JsonVariantConst v) {
 }
 
 
-// "{text}. {reason}" 을 SPEECH_MAX_CHARS 글자 안으로 만든다.
-// 글자 수는 UTF-8 기준으로 센다 (한글 한 글자 = 3바이트). 글자 중간에서 자르지 않는다.
-// text 만으로 넘치면 reason 은 빠지고 text 도 잘린다.
+// "{text}입니다. {reason}" 을 만든다 (예: "사과입니다. 빨간 껍질에 …").
+//   text(이름)가 비어 있으면 "입니다" 를 붙이지 않고 reason 만 읽는다.
+//   SPEECH_MAX_CHARS 글자를 넘으면 뒤를 자른다.
+//   글자 수는 UTF-8 기준으로 센다 (한글 한 글자 = 3바이트). 글자 중간에서 자르지 않는다.
 String buildSpeechText(const char* text, const char* reason) {
   String s = text;
   s.trim();
+  if (s.length() > 0) s += "입니다.";
   String r = reason;
   r.trim();
   if (r.length() > 0) {
-    if (s.length() > 0) s += ". ";
+    if (s.length() > 0) s += " ";
     s += r;
   }
 
@@ -219,14 +235,22 @@ void sendFailureNotice(const String& speechId) {
     return;
   }
   BrailleData none = {};   // lineCount = 0 → "점자 없음"
-  linkSendJob(none, audio.data, audio.len);
+  linkSendJob(none, audio.data, audio.len);   // 결과는 쓰지 않음 ('C' 였으면 loop 가 새로 촬영)
   freeSpeech(audio);
 }
 
 
 // 서버 결과 하나(촬영 응답 또는 폴링 작업)를 처리해 ATmega 로 보낸다.
 // 돌려주는 값: 출력 성공이면 nullptr, 아니면 오류 이름 (폴링 완료 보고에 씀)
+//   "cancelled"    촬영 버튼(재촬영)으로 취소됨
+//   "print_failed" ATmega 가 'E' 를 보냈거나 답이 없음
 const char* processResult(JsonVariantConst r) {
+  // 그사이 촬영 버튼이 눌렸으면 이 결과는 버리고 새로 촬영한다 (음성도 받지 않음)
+  if (linkCapturePending()) {
+    Serial.println("[작업] 촬영 요청('C')이 와 있음 — 이 결과는 보내지 않음");
+    return "cancelled";
+  }
+
   // 폴링 작업에는 ok 가 없다 → 없으면 성공으로 본다
   bool ok = r["ok"].isNull() ? true : r["ok"].as<bool>();
   String speechId = speechIdOf(r["speech_id"]);
@@ -250,9 +274,12 @@ const char* processResult(JsonVariantConst r) {
   SpeechAudio audio;
   fetchSpeech(speechId.c_str(), text, audio);
 
-  bool printed = linkSendJob(g_braille, audio.data, audio.len);
+  LinkResult result = linkSendJob(g_braille, audio.data, audio.len);
   freeSpeech(audio);
-  return printed ? nullptr : "print_failed";
+
+  if (result == LINK_DONE)    return nullptr;
+  if (result == LINK_CAPTURE) return "cancelled";
+  return "print_failed";
 }
 
 
@@ -327,9 +354,9 @@ void pollJob() {
 
 
 // ─────────────────────────────────────────────
-// 메인
+// 촬영 → 서버 → 결과
 // ─────────────────────────────────────────────
-void runOnce() {
+void runCapture() {
   Serial.println("\n── 촬영 ──");
   camera_fb_t* fb = camCapture();
   if (!fb) {
@@ -351,20 +378,30 @@ void runOnce() {
   handleResponse(response);
 }
 
+
+// ─────────────────────────────────────────────
+// 메인
+// ─────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n=== Eye 2 Dot 카메라 ===");
 
-  pinMode(PIN_TRIGGER, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_TRIGGER), onTriggerPressed, FALLING);
-
   linkBegin();   // 카메라가 안 켜져도 ATmega 에 알림음을 보낼 수 있도록 먼저
+
+  // 음성 버퍼(최대 SPEECH_MAX_BYTES)는 PSRAM 에 잡는다
+  Serial.printf("PSRAM: %s (비어 있는 공간 %u bytes, 음성 버퍼 최대 %u bytes)\n",
+                psramFound() ? "있음" : "없음 — 음성을 받지 못합니다",
+                (unsigned)ESP.getFreePsram(), (unsigned)SPEECH_MAX_BYTES);
 
   if (!camInit()) {
     Serial.println("카메라 초기화 실패. 리본 케이블과 전원을 확인하세요.");
     linkSendAlert(ALERT_CAMERA);
-    while (true) delay(1000);
+    // 멈춰 있는 동안에도 촬영 요청에는 바로 실패를 알린다 (ATmega 가 90초 기다리지 않게)
+    while (true) {
+      if (captureRequested()) linkSendAlert(ALERT_CAMERA);
+      delay(50);
+    }
   }
   Serial.println("카메라 준비 완료");
 
@@ -373,24 +410,31 @@ void setup() {
                 USE_MOCK ? "목" : "실제 AI");
 
   checkHealth();
-  Serial.printf("방아쇠를 누르면 촬영합니다. 출력 작업은 %lu ms마다 확인합니다 (기기 이름: %s).\n",
+
+  // 부팅하는 동안(Wi-Fi 연결 등) 쌓인 바이트는 버린다.
+  // 그동안 눌린 촬영 버튼('C')도 버려지므로 ATmega 는 인식 중 시간 초과 뒤 실패음을 낸다.
+  linkDiscardInput();
+  usbCaptureCommand();
+
+  Serial.printf("촬영: ATmega 촬영 버튼('C') 또는 USB 시리얼 'c'. "
+                "출력 작업은 할 일이 없을 때 %lu ms마다 확인합니다 (기기 이름: %s).\n",
                 (unsigned long)POLL_INTERVAL_MS, DEVICE_ID);
 }
 
 void loop() {
-  // ① 방아쇠가 우선
-  if (g_triggerFlag) {
-    delay(30);                 // 떨림이 끝나기를 기다림
-    runOnce();
-    g_triggerFlag = false;     // 처리하는 동안 눌린 것·떨림은 버린다 (중복 촬영 방지)
+  // ① 촬영 요청이 우선. 작업을 보내는 도중에 온 'C'(재촬영)도 여기서 이어 받는다
+  if (captureRequested()) {
+    runCapture();
     g_lastPoll = millis();
+    return;
   }
 
-  // ② 폴링 — 서버가 응답하지 않으면 간격을 늘린다
+  // ② 폴링 — 할 일이 없을 때만 (촬영·작업 중에는 위·아래 함수가 끝날 때까지 여기 오지 않음)
+  //    서버가 응답하지 않으면 간격을 늘린다
   uint32_t interval = g_serverOnline ? POLL_INTERVAL_MS : POLL_INTERVAL_OFFLINE_MS;
   if (millis() - g_lastPoll >= interval) {
-    g_lastPoll = millis();
     if (WiFi.status() == WL_CONNECTED) pollJob();
+    g_lastPoll = millis();   // 작업을 처리했으면 그 뒤부터 다시 센다
   }
 
   delay(10);

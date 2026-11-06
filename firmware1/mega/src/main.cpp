@@ -5,8 +5,9 @@
  * 모듈
  *   link    : ESP32-CAM 과 프레임 주고받기 (Serial1)              link.h
  *   speech  : 소리 — 음성 스트리밍, 소리 신호, 시험음               speech.h
- *   button  : 버튼 떨림 방지, "새로 눌림"                         button.h
- *   job     : 작업 진행 — 음성 → 버튼 → 타각 → 'D'/'E', 상태 LED  job.h
+ *   button  : 버튼 떨림 방지, "새로 눌림" (D31 촬영, D32 출력)     button.h
+ *   job     : 촬영 요청('C'), 작업 진행 — 안내 재생 → 출력 버튼 → 타각 → 'D'/'E',
+ *             상태 LED (상태와 버튼 표는 job.h)                    job.h
  *   punch   : 점자 타각 (지금은 자리만)                            punch.h
  *   console : USB 시리얼 시험 명령, 상태 출력                      console.h
  * 핀 번호는 pins.h, ESP32 와의 약속은 common/protocol.h 에 있습니다.

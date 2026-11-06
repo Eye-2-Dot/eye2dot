@@ -23,9 +23,10 @@ static const char* WIFI_SSID     = WIFI_SSID_VALUE;      // include/secrets.h
 static const char* WIFI_PASSWORD = WIFI_PASSWORD_VALUE;
 static const char* SERVER_IP     = SERVER_IP_VALUE;
 
-static const uint16_t HTTP_TIMEOUT_MS = 45000;  // Gemini 응답 대기 (앱과 동일)
-static const int      MAX_RETRY       = 3;      // 네트워크 오류일 때만 재시도
-static const uint16_t POLL_TIMEOUT_MS = 2000;   // 폴링·완료 보고 한 번에 기다리는 최대 시간
+static const uint16_t HTTP_TIMEOUT_MS         = 45000;  // Gemini 응답 대기 (앱과 동일)
+static const uint16_t POST_CONNECT_TIMEOUT_MS = 3000;   // 사진 전송: 서버에 연결하는 데 기다리는 최대 시간
+static const int      MAX_RETRY               = 3;      // 연결 실패일 때만 재시도
+static const uint16_t POLL_TIMEOUT_MS         = 2000;   // 폴링·완료 보고 한 번에 기다리는 최대 시간
 
 
 void netBegin() {
@@ -96,10 +97,14 @@ bool postPhoto(camera_fb_t* fb, String& response) {
   url += "?mode=";
   url += DEVICE_MODE;
 
+  // 가장 오래 걸리는 경우 (연결 실패 3초 × 2 + 쉼 3초 + 응답 기다림 45초 + 업로드) 약 59초.
+  // ATmega 가 기다리는 시간(protocol.h 의 LINK_CAPTURE_TIMEOUT_MS)이 이 계산에 맞춰져 있으니,
+  // 시간·횟수를 바꾸면 그 값도 함께 볼 것.
   int code = -1;
   for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
     HTTPClient http;
     http.begin(url);
+    http.setConnectTimeout(POST_CONNECT_TIMEOUT_MS);
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.addHeader("Content-Type", String("multipart/form-data; boundary=") + boundary);
 
@@ -114,10 +119,14 @@ bool postPhoto(camera_fb_t* fb, String& response) {
       break;
     }
 
-    // 여기까지 오면 네트워크 오류 → 잠시 쉬고 재시도
     Serial.printf("전송 실패 (%d/%d): %s\n",
                   attempt, MAX_RETRY, http.errorToString(code).c_str());
     http.end();
+
+    // 서버에 연결조차 못 한 경우만 다시 보낸다.
+    // 응답을 기다리다 시간이 지난 경우 등은 서버가 이미 사진을 받아 처리 중일 수 있어서
+    // 다시 보내지 않는다 (같은 사진으로 Gemini 를 또 부르고, 기다리는 시간만 길어짐).
+    if (code != HTTPC_ERROR_CONNECTION_REFUSED) break;
     if (attempt < MAX_RETRY) delay(1000 * attempt);
   }
 
@@ -251,7 +260,10 @@ bool fetchSpeech(const char* speechId, const String& text, SpeechAudio& out) {
     }
   }
 
+  // 음성 버퍼는 PSRAM(4MB)에 잡는다. 내부 RAM 은 300KB 남짓이라 512KB 는 들어가지 않는다.
+  // PSRAM 이 없을 때만 내부 RAM 을 시도한다 (짧은 음성이면 될 수도 있음).
   uint8_t* buf = (uint8_t*)ps_malloc(want);
+  bool inPsram = (buf != nullptr);
   if (!buf) buf = (uint8_t*)malloc(want);
   if (!buf) {
     Serial.println("[음성] 메모리 부족 — 음성 없이 진행");
@@ -288,8 +300,9 @@ bool fetchSpeech(const char* speechId, const String& text, SpeechAudio& out) {
 
   out.data = buf;
   out.len  = got;
-  Serial.printf("[음성] %u bytes (%.1f초 분량), %lums\n",
-                (unsigned)got, got / 8000.0f, (unsigned long)(millis() - t0));
+  Serial.printf("[음성] %u bytes (%.1f초 분량, %s), %lums\n",
+                (unsigned)got, got / 8000.0f, inPsram ? "PSRAM" : "내부 RAM",
+                (unsigned long)(millis() - t0));
   return true;
 }
 

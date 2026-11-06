@@ -347,6 +347,11 @@ void linkReportError() {
 }
 
 
+void linkSendCapture() {
+  LINK.write(CMD_CAPTURE);
+}
+
+
 uint16_t linkFramesOk() {
   return framesOk;
 }

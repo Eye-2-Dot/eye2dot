@@ -14,9 +14,9 @@
 
 // 버튼 번호. 핀은 button.cpp 의 표에서 pins.h 상수로 연결합니다.
 enum ButtonId : uint8_t {
-  BUTTON_OK,       // pins.h 의 PIN_BTN_OK
-  BUTTON_CANCEL,   // pins.h 의 PIN_BTN_CANCEL
-  BUTTON_COUNT     // 개수 (버튼 아님)
+  BUTTON_CAPTURE,   // 촬영·재촬영 (pins.h 의 PIN_BTN_CAPTURE, D31)
+  BUTTON_PRINT,     // 출력 (pins.h 의 PIN_BTN_PRINT, D32)
+  BUTTON_COUNT      // 개수 (버튼 아님)
 };
 
 /* setup() 에서 한 번. 버튼 핀을 INPUT_PULLUP 으로 설정합니다. */

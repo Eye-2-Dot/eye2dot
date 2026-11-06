@@ -64,6 +64,9 @@ void linkAudioAbort();
 void linkReportDone();    // 'D' 출력 완료
 void linkReportError();   // 'E' 실패·취소
 
+/* ESP32 에 촬영을 요청합니다 ('C'). 재촬영이면 linkReportError() 다음에 부릅니다 */
+void linkSendCapture();
+
 /* 상태 출력용 */
 uint16_t linkFramesOk();      // 정상으로 받은 프레임 수
 uint16_t linkFramesBad();     // 버린 프레임 수 (검사값·길이 이상, 중간에 끊김)

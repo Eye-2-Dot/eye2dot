@@ -23,8 +23,8 @@ struct Button {
 
 // 줄 순서는 button.h 의 ButtonId 순서와 같아야 합니다
 static Button buttons[] = {
-  { PIN_BTN_OK,     false, false, 0, false },   // BUTTON_OK
-  { PIN_BTN_CANCEL, false, false, 0, false },   // BUTTON_CANCEL
+  { PIN_BTN_CAPTURE, false, false, 0, false },   // BUTTON_CAPTURE
+  { PIN_BTN_PRINT,   false, false, 0, false },   // BUTTON_PRINT
 };
 static_assert(sizeof(buttons) / sizeof(buttons[0]) == BUTTON_COUNT,
               "버튼 표의 줄 수가 button.h 의 ButtonId 개수와 다릅니다");

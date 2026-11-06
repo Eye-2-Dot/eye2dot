@@ -80,7 +80,7 @@ static void handleCommand(char cmd) {
       return;
     }
     if (speechAlertActive()) {
-      Serial.println(F("알림음 재생 중 — 끝난 뒤에 보내세요"));
+      Serial.println(F("소리 신호 재생 중 — 끝난 뒤에 보내세요"));
       return;
     }
   }
@@ -147,8 +147,8 @@ static void handleCommand(char cmd) {
 static void printHelp() {
   Serial.println();
   Serial.println(F("========================================"));
-  Serial.println(F("  Eye 2 Dot - Firmware 1"));
-  Serial.println(F("  3단계: Timer PWM 오디오 출력"));
+  Serial.println(F("  Eye 2 Dot - Firmware 1 (ATmega2560)"));
+  Serial.println(F("  USB 시험 콘솔: 소리 시험 + 상태 출력"));
   Serial.println(F("========================================"));
   Serial.print  (F("오디오 핀   : "));
   Serial.print  (PIN_AUDIO);
@@ -168,8 +168,10 @@ static void printHelp() {
   Serial.println(F("순서대로 2 -> 3 으로 확인하는 것을 권합니다."));
   Serial.println(F("----------------------------------------"));
   Serial.println(F("ESP32 연결: Serial1 (D19 RX1 / D18 TX1)"));
-  Serial.println(F("  작업이 오면 음성 재생 -> D32 확인 = 타각 / D33 취소"));
-  Serial.println(F("  작업 중에는 0~5 시험 명령을 받지 않습니다."));
+  Serial.println(F("버튼"));
+  Serial.println(F("  D31 촬영 : 대기 중이면 촬영, 안내 재생·출력 대기 중이면 재촬영"));
+  Serial.println(F("  D32 출력 : 안내 음성을 듣는 중이나 들은 뒤 누르면 타각"));
+  Serial.println(F("대기가 아닐 때(인식 중·작업 중)는 0~5 시험 명령을 받지 않습니다."));
   Serial.println();
 }
 
@@ -185,7 +187,7 @@ static void printStatus() {
   if (!speechIsPlaying()) {
     Serial.print(F("정지"));
   } else if (speechAlertActive()) {
-    Serial.print(F("알림음"));
+    Serial.print(F("소리 신호"));
   } else if (speechStreamIsActive()) {
     Serial.print(F("작업 음성"));
   } else if (currentFreq > 0) {
