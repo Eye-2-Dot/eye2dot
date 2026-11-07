@@ -1,4 +1,4 @@
-# 폴링·음성 API 규격과 펌웨어 1 시리얼 약속 (제안)
+# 폴링·음성 API 규격과 펌웨어 1 시리얼 약속 (구현됨)
 
 앱에서 "출력하기"를 누른 작업을 서버가 대기열에 넣어 두고,
 펌웨어(ESP32)가 1초마다 "출력할 것 있나?" 물어 가져가는 방식.
@@ -9,8 +9,10 @@ ESP32 (1초마다) ──GET /jobs/next────────▶  없음 / 작
 ESP32 출력 끝   ──POST /jobs/{id}/done──▶  완료 기록
 ```
 
-기준 구현: `firmware1/tools/poll_test_server.py` (그대로 실행해 시험 가능).
-서버 담당은 이 내용을 `server/main.py` 에 옮기면 된다.
+**구현됨**: 실제 서버 `server/main.py` (대기열은 `server/jobs.py`, 거울 변환은 `server/mirror.py`,
+음성 번호는 `server/speech_store.py`).
+`firmware1/tools/poll_test_server.py` 는 인터넷·Gemini 키 없이 시험하던 미니 서버다.
+**거울 처리를 하지 않으므로** 점자 값은 실제 서버와 다르다.
 
 | 장 | 내용 |
 |---|---|
@@ -43,8 +45,12 @@ ESP32 출력 끝   ──POST /jobs/{id}/done──▶  완료 기록
 
 | error | HTTP | 조건 |
 |---|---|---|
-| `invalid_mode` | 400 | mode 가 label/book 이 아님 |
-| `missing_braille` | 400 | braille 이 비었음 |
+| `invalid_mode` | 400 | mode 가 label/book 이 아님 (빠지면 label) |
+| `missing_braille` | 400 | braille 이 없거나 비었음 |
+| `invalid_braille` | 400 | 모양이 틀림 (라벨은 1차원 배열, 책은 줄마다 칸이 하나 이상 있는 2차원 배열) 또는 칸 값이 0~63 정수가 아님 |
+
+- 앱은 **원래 모양(거울 아님)** 그대로 보낸다. 서버가 대기열에는 그대로 두고, 기기에 줄 때 거울로 바꾼다.
+- 펌웨어 1 작업이면 서버가 이때 음성을 **뒤에서** 만들기 시작한다 (앱은 기다리지 않는다).
 
 ## 2. `GET /jobs/next?device=fw1` — ESP32 가 1초마다 호출
 
@@ -53,21 +59,24 @@ ESP32 출력 끝   ──POST /jobs/{id}/done──▶  완료 기록
 {"ok":true, "job":null}
 ```
 
-작업 있음:
+작업 있음 (앱이 `[13,41]` 을 보냈을 때):
 ```json
 {"ok":true, "job":{"id":"7cabc156cc10", "mode":"label", "text":"우유",
-                   "reason":"흰색 종이팩…", "braille":[13,41],
-                   "speech_id":"s7cabc156cc10"}}
+                   "reason":"흰색 종이팩…", "braille":[41,13], "cell_count":2,
+                   "speech_id":"4710c121fe89", "mirrored":true}}
 ```
 
-- 한 번에 **한 개만**, 들어온 순서대로 준다.
+- 한 번에 **한 개만**, 들어온 순서대로 준다. 기기별(`fw1`, `fw2`)로 대기열이 따로다.
 - 준 작업은 대기열에서 빼서 "진행 중"으로 옮긴다. **같은 작업을 두 번 주지 않는다.**
-- `braille` 형식은 기존과 같다. 라벨은 1차원, 책은 2차원.
+- **`braille` 은 거울 모양**이다 (`"mirrored": true`). 칸 안의 좌우 열만 바꾸고 칸·줄 순서는 그대로다.
+  라벨은 1차원, 책은 2차원. 약속은 [`api-spec.md`](api-spec.md) "기기로 보내는 점자는 거울 모양".
+- `cell_count` 는 전체 칸 수 (책은 모든 줄의 합).
 - `id` 는 영문·숫자만 (주소에 그대로 들어가므로).
-- 기기 이름이 틀리면 400 `invalid_device`.
-- `speech_id` 는 **선택**이다. 있으면 ESP32 가 `GET /speech/{speech_id}` 로 음성을 받고,
+- 기기 이름이 없거나 틀리면 400 `invalid_device`.
+- `speech_id` 는 **`fw1` 작업에만** 붙는다 (음성 안내는 펌웨어 1 전용). 있으면 ESP32 가 `GET /speech/{speech_id}` 로 음성을 받고,
   없으면 `text`·`reason` 으로 `GET /speech?text=` 를 부른다 (5·6장).
-  `/process-file` 응답에도 같은 규칙으로 `speech_id` 를 붙일 수 있다.
+  대기열에서 10분 넘게 기다려 번호가 만료됐으면 줄 때 새 번호를 붙인다.
+- 기기는 2초만 기다리므로 서버는 여기서 음성을 기다리지 않는다. 아직 만드는 중이면 `GET /speech/{speech_id}` 가 기다렸다가 준다.
 
 ## 3. `POST /jobs/{id}/done` — ESP32 가 출력 후 호출
 
@@ -88,6 +97,14 @@ ESP32 출력 끝   ──POST /jobs/{id}/done──▶  완료 기록
 ## 4. `GET /jobs` — 확인용
 
 대기 중·진행 중·최근 완료 작업을 보여 준다. 브라우저로 열어 확인.
+
+```json
+{"waiting":{"fw1":[], "fw2":[]},
+ "in_progress":{"7cabc156cc10":{"device":"fw1", "seconds":3.2}},
+ "history":[{"id":"…", "device":"fw2", "ok":false, "error":"cancelled", "seconds":0.2}]}
+```
+
+`history` 는 최근 20개.
 
 ---
 
@@ -117,9 +134,11 @@ ESP32 출력 끝   ──POST /jobs/{id}/done──▶  완료 기록
 
 | 경우 | ESP32 가 부르는 주소 |
 |---|---|
-| 응답(또는 job)에 `speech_id` 가 있음 | `GET /speech/{speech_id}` |
-| `speech_id` 가 없음 (지금의 실제 서버) | `GET /speech?text=…` — 문장 = `"{text}입니다. {reason}"` (예: `사과입니다. 빨간 껍질에 …`) |
-| 서버가 실패로 답함 (`"ok":false`) | `speech_id` 가 있으면 그것, 없으면 고정 문구 `"인식하지 못했어요. 다시 찍어 주세요"` |
+| 응답(또는 job)에 `speech_id` 가 있음 | `GET /speech/{speech_id}` — 서버가 만든 문장. 성공은 `"{text}입니다. {reason}"`, 실패는 reason + 안내 문장(`다시 찍어 주세요.` / `잠시 후 다시 눌러 주세요.`, 나누는 기준은 [`api-spec.md`](api-spec.md) "기기용 응답") |
+| `speech_id` 가 없음 (`device` 없이 보낸 요청, 서버가 음성을 만들지 못한 경우) | `GET /speech?text=…` — 문장 = `"{text}입니다. {reason}"` (예: `사과입니다. 빨간 껍질에 …`) |
+| 서버가 실패로 답했는데 `speech_id` 가 없음 | 고정 문구 `"인식하지 못했어요. 다시 찍어 주세요"` |
+
+`speech_id` 는 `device=fw1` 일 때만 붙는다 (음성 안내는 펌웨어 1 전용).
 
 - `text`(이름)가 비어 있으면 "입니다" 를 붙이지 않고 `reason` 만 읽는다.
 - 문장이 **200자**(글자 수, 서버 `/speech` 의 한도)를 넘으면 뒤를 자른다 (reason 부터 잘린다).
@@ -132,8 +151,9 @@ ESP32 출력 끝   ──POST /jobs/{id}/done──▶  완료 기록
 
 ## 6. `GET /speech/{speech_id}` · `GET /speech?text=` — 응답 형식
 
-두 주소 모두 같은 형식이다. `GET /speech?text=` 는 실제 서버(`server/main.py`)에 이미 있고,
-`GET /speech/{speech_id}` 는 아직 없다 (서버 담당이 만들 자리 — 시험 서버에는 있음).
+두 주소 모두 같은 형식이고, 둘 다 실제 서버(`server/main.py`)에 있다.
+`GET /speech/{speech_id}` 의 보관 규칙(최대 32개, 만든 뒤 10분)과 없는 번호(404 `unknown_speech`)는
+[`api-spec.md`](api-spec.md) 의 `GET /speech/{speech_id}` 절.
 
 **음성 형식(8kHz·8비트·무음 128 등)과 헤더는 [`api-spec.md`](api-spec.md) 의 `GET /speech` 절이 기준이다.**
 `GET /speech/{speech_id}` 도 그 절의 "오디오 형식"·"성공 응답"·"실패 응답"을 그대로 따른다.
@@ -141,7 +161,7 @@ ESP32 출력 끝   ──POST /jobs/{id}/done──▶  완료 기록
 - ESP32 는 `Content-Length` 만큼 받는다.
 - 200 이 아니면 본문은 JSON 오류다 → 재생하지 않고 음성 없이 진행.
 
-시험 서버는 내용과 상관없이 1초짜리 440Hz 사인파를 돌려준다. 없는 `speech_id` 면 404 `unknown_speech`.
+시험 서버(`poll_test_server.py`)는 내용과 상관없이 1초짜리 440Hz 사인파를 돌려준다. 없는 `speech_id` 면 404 `unknown_speech`.
 
 ---
 
@@ -162,11 +182,16 @@ ATmega 는 1바이트로 답하거나 촬영을 요청한다.
 
 | 종류 | 이름 | 내용 | ATmega 동작 |
 |---|---|---|---|
-| `0x01` | 점자 | `[줄 수 1B]` + 줄마다 `[칸 수 1B][칸 값…]`. 칸 값 = 6비트 마스크(점1 = bit0 … 점6 = bit5). **줄 수 0** = 점자 없음(음성만) | 새 작업 → 안내 재생. 어느 상태에서든 지금 작업을 정리하고 갈아탄다 |
+| `0x01` | 점자 | `[줄 수 1B]` + 줄마다 `[칸 수 1B][칸 값…]`. 칸 값 = **서버가 거울로 바꾼 6비트 값 = 솔레노이드 비트** (bit0 = 위에서 볼 때 왼쪽 위 솔레노이드 1번 … bit5 = 6번). **줄 수 0** = 점자 없음(음성만) | 새 작업 → 안내 재생. 어느 상태에서든 지금 작업을 정리하고 갈아탄다 |
 | `0x02` | 음성 시작 | `[전체 바이트 수 4B little-endian]` | 자리가 있으면 `'R'` |
 | `0x03` | 음성 조각 | PCM 1~256바이트 | 자리가 있으면 `'R'` |
 | `0x04` | 음성 끝 | 없음 | — |
 | `0x05` | 알림음 | `[알림 종류 1B]` 1 = 네트워크, 2 = 카메라, 3 = 그 밖 | 응답 없음. 종류와 상관없이 **실패음**(300Hz 0.6초). 인식 중이었으면 대기로 |
+
+- 점자 칸 값은 ESP32·ATmega 가 **뒤집지 않고 그대로** 솔레노이드에 쓴다. 거울로 바꾸는 일은 서버만 한다
+  (`/jobs/next?device=fw1`, `/process-file?device=fw1`). 약속은 [`api-spec.md`](api-spec.md) "기기로 보내는 점자는 거울 모양".
+- ⚠️ 기기 촬영 경로는 ESP32 가 `/process-file` 주소에 `&device=fw1` 을 붙여야 거울 값을 받는다.
+  지금 펌웨어는 붙이지 않으므로(수정 예정) 기기 촬영 결과는 아직 거울이 아니다. 앱 작업(`/jobs/next`)은 거울이다.
 
 ### ATmega → ESP32: 1바이트
 

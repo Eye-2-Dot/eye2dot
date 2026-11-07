@@ -30,11 +30,34 @@
 - `0`은 **빈 칸(공백)** 을 뜻한다.
 - 유니코드 점자로 보려면 `chr(0x2800 + mask)`.
 
+### 기기로 보내는 점자는 거울 모양 (`mirror.py`)
+
+앱으로 가는 `braille`·`braille_preview`는 위 그대로(읽는 면 기준)다. **기기(펌웨어 1·2)로 가는 것만** 서버가 거울로 바꾼다.
+
+- 펌웨어 1·2 모두 솔레노이드가 종이·라벨을 **위에서 아래로** 찍는다. 점이 아랫면으로 나오므로 사람은 **좌우로 뒤집어** 읽는다.
+- 기계는 줄의 첫 칸(배열 0번)을 위에서 볼 때 **오른쪽 끝**에 찍고 왼쪽으로 진행한다. 줄은 위에서 아래로. → 칸 순서·줄 순서는 그대로 둔다.
+- 솔레노이드 번호는 위에서 볼 때 **왼쪽 위가 1번**. → 칸 안에서 좌우 열만 바꾼다 (점 1↔4, 2↔5, 3↔6).
+
+```
+mirrored = ((m & 0b000111) << 3) | ((m >> 3) & 0b000111)
+예) [32, 35, 8, 39] ("사과") → [4, 28, 1, 60]
+```
+
+- 칸 순서·줄 순서는 바꾸지 않고, 빈 칸(`0`)으로 채우지도 않는다. 두 번 바꾸면 원래대로다.
+- 펌웨어(ESP32·ATmega)는 받은 값을 뒤집지 않고 그대로 솔레노이드 비트로 쓴다 (bit0 = 위에서 볼 때 왼쪽 위 솔레노이드).
+- 거울 값이 들어 있는 응답에는 `"mirrored": true`가 붙는다 (아래 "기기용 응답", `docs/POLLING_API.md`의 `/jobs/next`).
+- 자체 시험: `cd server && python mirror.py`
+
 ### CORS
 
 개발 단계라 모든 출처를 허용한다 (`allow_origins=["*"]`). 외부 배포 시 특정 도메인만 허용할 것.
 
 브라우저에서 띄운 앱도 `/speech`의 `X-Audio-Duration` 헤더를 읽을 수 있도록 노출해 두었다 (`expose_headers`).
+
+### 폴링 (앱 "출력하기" → 기기)
+
+`POST /print`, `GET /jobs/next?device=`, `POST /jobs/{id}/done`, `GET /jobs`는 [`POLLING_API.md`](POLLING_API.md) 1~4장에 있다.
+기기에 주는 작업도 아래 "기기용 응답"처럼 거울 점자 + (`fw1`만) `speech_id` + `"mirrored": true`다.
 
 ---
 
@@ -72,8 +95,10 @@ Content-Type: image/jpeg
 |---|---|---|---|
 | `mode` | 쿼리 또는 form | 아니오 (기본 `label`) | `label` 또는 `book`. **쿼리(`?mode=`)를 먼저 보고**, 없으면 form 필드, 둘 다 없으면 `label`. 빈 값(`?mode=`)은 없는 것으로 본다 |
 | `image` | form (파일) | **예** | 이미지 파일 |
+| `device` | 쿼리 | 아니오 | `fw1`(라벨, mode=label) 또는 `fw2`(책, mode=book). 붙이면 **기기용 응답**(아래 "기기용 응답"). 없거나 빈 값이면 지금까지와 똑같은 앱용 응답 |
 
 앱은 쿼리로 보내고 (`POST /process-file?mode=label`), 펌웨어 1은 쿼리와 form 둘 다에 넣는다.
+펌웨어 1은 `&device=fw1`을 붙여야 거울 점자와 `speech_id`를 받는다.
 
 ## `POST /process-mock`
 
@@ -84,12 +109,14 @@ Content-Type: image/jpeg
 |---|---|---|---|
 | `mode` | **쿼리** | 아니오 (기본 `label`) | `label` 또는 `book` |
 | `image` | form (파일) | 아니오 | 붙여도 되고 안 붙여도 된다. 붙여도 읽지 않는다 |
+| `device` | 쿼리 | 아니오 | `/process-file`과 같다 (`?device=fw1` → 기기용 응답) |
 
 ```
 POST /process-mock?mode=book
 ```
 
 응답 형식은 `/process-file`과 **완전히 동일**하다. 앱은 나중에 주소에서 `-mock`만 떼면 그대로 실서버로 전환된다.
+`?mode=label&device=fw1`이면 Gemini 없이 기기용 응답(거울 점자 + `speech_id`)을 시험할 수 있다 (음성을 만들려면 서버에 인터넷이 필요하다).
 
 ## `POST /translate`
 
@@ -121,7 +148,7 @@ Content-Type: application/json
 
 ## 성공 응답
 
-네 엔드포인트(`/process`, `/process-file`, `/process-mock`, `/translate`)가 모두 같은 형식을 쓴다.
+네 엔드포인트(`/process`, `/process-file`, `/process-mock`, `/translate`)가 모두 같은 형식을 쓴다 (`device`를 붙이지 않았을 때. 붙였을 때는 아래 "기기용 응답").
 
 | 키 | 타입 | 설명 |
 |---|---|---|
@@ -212,6 +239,43 @@ Content-Type: application/json
 
 ---
 
+## 기기용 응답 (`?device=fw1` / `?device=fw2`)
+
+`/process-file`·`/process-mock`에 `device`를 붙이면 기기(펌웨어)가 쓰기 좋은 형태로 답한다. 앱용 응답과 다른 점만 적는다.
+
+| 키 | 앱용 | 기기용 (성공) | 기기용 (실패) |
+|---|---|---|---|
+| `ok` | ✓ | `true` | `false` |
+| `error` | 실패일 때 | — | ✓ (앱용과 같음) |
+| `text` · `reason` | ✓ | ✓ (펌웨어 1은 `speech_id`가 없을 때 이것으로 음성 문장을 만든다) | `reason` ✓ |
+| `braille` | 원래 모양 | **거울 모양** (라벨 1차원, 책 2차원 = 줄 구조 그대로) | — |
+| `braille_preview` | ✓ | **없음** (기기는 읽지 않고, 거울인지 헷갈리므로) | — |
+| `cell_count` | ✓ | ✓ (거울이어도 같다. 책은 모든 줄의 합) | — |
+| `speech_id` | — | **`fw1`만**, 음성을 만들었을 때만 | **`fw1`만**, 실패 안내 음성을 만들었을 때만 |
+| `mirrored` | — | `true` | — |
+
+- HTTP 상태 코드는 앱용과 같다 (`recognition_failed` 200, `rate_limit` 429 …).
+- `device`가 `fw1`/`fw2`가 아니거나 mode와 맞지 않으면(`fw1` = `label`, `fw2` = `book`) **400 `invalid_device`**. mode 자체가 잘못되면 `invalid_mode`가 먼저 나간다.
+- **음성(`speech_id`)은 펌웨어 1 전용이다.** `fw2`에는 붙이지 않는다.
+- 펌웨어 1의 음성은 **응답하기 전에 서버가 미리 만들어** 번호를 붙인다. 그래서 응답이 음성 생성 시간(보통 1~3초)만큼 늦어지는 대신, 기기는 `GET /speech/{speech_id}`로 바로 받는다. 음성을 만들지 못하면(인터넷 끊김 등) `speech_id`를 빼고 답하며, 그때 펌웨어 1은 `GET /speech?text=`로 직접 받는다.
+
+**음성 문장**
+
+| 경우 | 문장 |
+|---|---|
+| 성공 | `"{text}입니다. {reason}"` (text가 비면 reason만). 예: `우유입니다. 흰색 종이팩에 우유 표기가 있습니다.` |
+| 실패 | `reason` + 안내 문장. reason이 비면 기본 문장(아래). 예: `올바른 이미지 파일이 아닙니다. 다시 찍어 주세요.` |
+
+| 실패 `error` | 안내 문장 | reason이 비었을 때 |
+|---|---|---|
+| `recognition_failed`, `invalid_image` | ` 다시 찍어 주세요.` (사진을 다시 찍으면 나아질 수 있음) | `인식하지 못했습니다.` |
+| `rate_limit`, `network_error`, `parse_failed`, 그 밖의 서버 오류 | ` 잠시 후 다시 눌러 주세요.` (서버·AI 쪽 문제) | `서버에서 문제가 생겼습니다.` |
+| `invalid_mode`, `invalid_device` | 음성 없음 (기기 설정 오류라 다시 해도 같다) | — |
+
+- 문장은 200자(`GET /speech`의 한도)까지. 넘으면 성공은 뒤를 자르고, 실패는 reason을 잘라 안내 문장을 남긴다.
+
+---
+
 ## `GET /speech`
 
 **펌웨어 1 음성 안내용.** 텍스트를 음성으로 바꿔 **오디오 바이트 그대로** 돌려준다 (JSON이 아니다).
@@ -257,7 +321,7 @@ x-audio-duration: 1.500
 
 ### 오디오 형식
 
-**음성 형식은 이 표가 기준이다.** `GET /speech/{speech_id}`(`docs/POLLING_API.md`, 아직 실제 서버에 없음)와 펌웨어도 이 표를 따른다.
+**음성 형식은 이 표가 기준이다.** `GET /speech/{speech_id}`(아래)와 펌웨어도 이 표를 따른다.
 
 | 항목 | 값 |
 |---|---|
@@ -291,6 +355,24 @@ x-audio-duration: 1.500
 
 기기가 서버에 아예 접속하지 못하면(기기 쪽 네트워크 문제) HTTP 응답 자체가 오지 않는다. 이 경우는 기기의 연결 오류로 처리한다.
 
+## `GET /speech/{speech_id}`
+
+**펌웨어 1 전용.** 서버가 미리 만들어 둔 음성을 번호로 받는다. 긴 문장을 주소에 실어 보내지 않아도 된다.
+
+```
+GET /speech/4710c121fe89
+```
+
+| 항목 | 내용 |
+|---|---|
+| 번호가 붙는 곳 | `/process-file`·`/process-mock?device=fw1` 응답, `/jobs/next?device=fw1` 작업 (`docs/POLLING_API.md`) |
+| 번호 모양 | 영문 소문자(a~f)·숫자 12자 |
+| 성공 응답 | `GET /speech`와 **똑같다** (raw PCM, `Content-Length`, `X-Audio-Duration`, 위 "오디오 형식") |
+| 실패 응답 | `GET /speech`의 `tts_unavailable`(503)·`conversion_failed`(500)와 같다 |
+| 없는 번호 | **404** `{"ok": false, "error": "unknown_speech", "reason": "…"}` — 잘못된 번호이거나 만료됨 |
+| 보관 | 서버 메모리에 **최대 32개, 만든 뒤 10분**. 넘치면 오래된 것부터 지운다. 서버를 다시 켜면 비워진다. `GET /speech`의 텍스트 캐시(최근 64개)와는 별개다 |
+| 아직 만드는 중 | `/print` 작업의 음성은 뒤에서 만든다. 그 사이에 요청하면 다 만들 때까지 **최대 25초** 기다렸다가 답한다 (그래도 안 되면 503 `tts_unavailable`) |
+
 ### 펌웨어 1이 받아 재생하는 방법 (ESP32-CAM → ATmega2560)
 
 실제 구현은 펌웨어에 있다. 이 절은 흐름과 코드 위치만 적는다.
@@ -299,7 +381,7 @@ x-audio-duration: 1.500
 서버 ─HTTP─▶ ESP32-CAM ─시리얼 프레임(115200bps)─▶ ATmega2560 링 버퍼 1KB ─8kHz 인터럽트─▶ D11 PWM ─▶ RC 필터 ─▶ LM386 ─▶ 스피커
 ```
 
-1. ESP32가 `GET /speech`로 음성을 PSRAM(ESP32의 추가 메모리)에 다 받는다. 상태 코드가 200이 아니거나 10초 안에 다 못 받으면 음성 없이 진행한다.
+1. ESP32가 `GET /speech/{speech_id}`(번호가 있을 때) 또는 `GET /speech?text=`로 음성을 PSRAM(ESP32의 추가 메모리)에 다 받는다. 상태 코드가 200이 아니거나 10초 안에 다 못 받으면 음성 없이 진행한다.
 2. ESP32가 음성을 최대 256바이트 조각으로 나눠 ATmega로 보낸다. ATmega는 링 버퍼(끝에 닿으면 처음으로 돌아가며 쓰는 저장 공간)에 자리가 생길 때마다 `'R'`로 다음 조각을 요청한다. 시리얼 전송(초당 약 11,520바이트)이 재생(초당 8000바이트)보다 빨라서 이렇게 속도를 맞춘다(흐름 제어).
 3. 버퍼가 절반(512바이트 = 64ms) 차면 재생을 시작한다. 조금 모아 두고 시작해야 전송이 잠깐 늦어져도 끊기지 않는다.
 4. 타이머 인터럽트가 1/8000초마다 한 바이트씩 꺼내 PWM 듀티(켜져 있는 시간의 비율)로 쓴다. 디코딩은 필요 없다.

@@ -1,15 +1,21 @@
 """
 Eye 2 Dot 백엔드 서버
 ESP32-CAM → 이미지 수신 → Gemini 인식 → 점역 → 응답
+
+기기(펌웨어)용으로는 여기에 더해
+  - 점자를 거울 모양으로 바꿔 준다 (mirror.py, ?device=fw1·fw2 를 붙였을 때만)
+  - 펌웨어 1 에는 음성을 미리 만들어 번호(speech_id)를 붙여 준다 (speech_store.py)
+  - 앱 "출력하기" 작업을 기기별 대기열로 넘겨 준다 (폴링, jobs.py)
 """
 
 import os
 import io
 import json
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import FastAPI, Request, UploadFile, File, Form, Query, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -19,7 +25,10 @@ from google.genai import types
 from google.genai import errors as genai_errors
 from PIL import Image
 
+import mirror
+import speech_store
 from braille import text_to_braille, text_to_braille_lines, cells_to_unicode
+from jobs import JobQueue
 from speech import text_to_pcm, estimate_duration, SpeechError
 
 # ─────────────────────────────────────────────
@@ -58,17 +67,29 @@ app.add_middleware(
 
 VALID_MODES = {"label", "book"}
 
+# 기기 이름 → 모드. 펌웨어 1 = 라벨 출력기, 펌웨어 2 = 책 타각기
+DEVICE_MODES = {"fw1": "label", "fw2": "book"}
+MODE_DEVICES = {mode: device for device, mode in DEVICE_MODES.items()}
+# 음성 안내가 있는 기기. 펌웨어 1 전용이라 fw2 에는 speech_id 를 붙이지 않는다
+SPEECH_DEVICES = {"fw1"}
+
+
+def _invalid_mode_payload(mode: str) -> dict:
+    return {
+        "ok": False,
+        "error": "invalid_mode",
+        "reason": f"mode는 {sorted(VALID_MODES)} 중 하나여야 합니다 (받은 값: '{mode}')",
+    }
+
 
 def _invalid_mode_response(mode: str) -> JSONResponse:
     """잘못된 mode에 대한 400 응답. 실제 엔드포인트와 목이 같은 응답을 쓰도록 여기 한 곳에 둔다."""
-    return JSONResponse(
-        {
-            "ok": False,
-            "error": "invalid_mode",
-            "reason": f"mode는 {sorted(VALID_MODES)} 중 하나여야 합니다 (받은 값: '{mode}')",
-        },
-        status_code=400,
-    )
+    return JSONResponse(_invalid_mode_payload(mode), status_code=400)
+
+
+def _invalid_device_response(reason: str) -> JSONResponse:
+    """잘못된 device에 대한 400 응답 (기기용 주소와 폴링이 같이 쓴다)."""
+    return JSONResponse({"ok": False, "error": "invalid_device", "reason": reason}, status_code=400)
 
 
 def _braille_fields(text: str, mode: str) -> dict:
@@ -234,7 +255,8 @@ async def process_raw(request: Request, mode: str = "label"):
 
     print(f"[수신] mode={mode}, size={len(image_bytes)} bytes")
 
-    return handle(image_bytes, mode)
+    # Gemini 호출(수 초)이 이벤트 루프를 막지 않도록 별도 스레드에서 처리한다 (응답은 같다)
+    return await run_in_threadpool(handle, image_bytes, mode)
 
 
 # ─────────────────────────────────────────────
@@ -246,6 +268,7 @@ async def process_file(
     # 같은 이름 "mode"를 쿼리와 폼 양쪽에서 받는다. 위치가 달라 서로 겹치지 않는다.
     mode_query: Optional[str] = Query(None, alias="mode"),
     mode_form: Optional[str] = Form(None, alias="mode"),
+    device: Optional[str] = Query(None),
 ):
     """/docs 화면에서 파일을 올려 테스트할 때, 그리고 앱이 실서버로 보낼 때 사용.
 
@@ -253,10 +276,17 @@ async def process_file(
     앱은 /process-mock과 똑같이 쿼리로 보내므로, 쿼리를 읽지 않으면
     책 모드 요청이 조용히 라벨 모드로 처리된다.
     빈 문자열(?mode=)은 값이 없는 것으로 보고 다음 순서로 넘어간다.
+
+    device(쿼리, 선택): fw1 또는 fw2. 붙이면 기기용 응답(거울 점자 등, _device_response 참고).
+    없거나 빈 값이면 지금까지와 똑같은 앱용 응답이다.
     """
     mode = mode_query or mode_form or "label"
     image_bytes = await image.read()
-    return handle(image_bytes, mode)
+    # Gemini 호출·음성 생성(수 초)이 이벤트 루프를 막지 않도록 별도 스레드에서 처리한다.
+    # 막히면 그동안 다른 요청(기기의 폴링 등)이 모두 멈춘다. 응답 내용은 같다.
+    if not device:
+        return await run_in_threadpool(handle, image_bytes, mode)
+    return await run_in_threadpool(_handle_for_device, image_bytes, mode, device)
 
 
 # ─────────────────────────────────────────────
@@ -299,7 +329,11 @@ MOCK_RESULTS = {
 
 
 @app.post("/process-mock")
-async def process_mock(mode: str = "label", image: Optional[UploadFile] = File(None)):
+async def process_mock(
+    mode: str = "label",
+    image: Optional[UploadFile] = File(None),
+    device: Optional[str] = None,
+):
     """Gemini를 호출하지 않고 고정된 더미 결과를 즉시 돌려주는 목 엔드포인트.
 
     사용법: POST /process-mock?mode=label
@@ -309,12 +343,21 @@ async def process_mock(mode: str = "label", image: Optional[UploadFile] = File(N
 
     응답 형식은 /process-file과 완전히 같으므로,
     앱은 나중에 주소만 바꾸면 그대로 동작한다.
+    device(쿼리, 선택)도 /process-file과 같다 (?device=fw1 → 기기용 응답).
     """
     if mode not in VALID_MODES:
         return _invalid_mode_response(mode)
 
-    print(f"[목 응답] mode={mode}")
-    return JSONResponse(MOCK_RESULTS[mode])
+    if not device:
+        print(f"[목 응답] mode={mode}")
+        return JSONResponse(MOCK_RESULTS[mode])
+
+    error = _check_device(device, mode)
+    if error is not None:
+        return error
+    print(f"[목 응답] mode={mode}, device={device}")
+    # 펌웨어 1이면 음성을 만드느라 수 초 걸릴 수 있으므로 별도 스레드에서
+    return await run_in_threadpool(_device_response, MOCK_RESULTS[mode], 200, device)
 
 
 def _is_valid_image(image_bytes: bytes) -> bool:
@@ -328,16 +371,17 @@ def _is_valid_image(image_bytes: bytes) -> bool:
 
 # ─────────────────────────────────────────────
 # 공통 처리 로직
+#
+# _process() 가 결과(dict)와 HTTP 상태 코드를 만들고,
+# 앱용은 handle() 이 그대로 JSON 으로, 기기용은 _handle_for_device() 가 거울 처리 등을 더해 낸다.
+# Gemini 호출로 수 초 걸리므로 스레드(run_in_threadpool)에서 부를 것.
 # ─────────────────────────────────────────────
-def handle(image_bytes: bytes, mode: str):
+def _process(image_bytes: bytes, mode: str) -> tuple[dict, int]:
     if mode not in VALID_MODES:
-        return _invalid_mode_response(mode)
+        return _invalid_mode_payload(mode), 400
 
     if not _is_valid_image(image_bytes):
-        return JSONResponse(
-            {"ok": False, "error": "invalid_image", "reason": "올바른 이미지 파일이 아닙니다."},
-            status_code=400,
-        )
+        return {"ok": False, "error": "invalid_image", "reason": "올바른 이미지 파일이 아닙니다."}, 400
 
     try:
         image_bytes = preprocess(image_bytes)
@@ -350,11 +394,11 @@ def handle(image_bytes: bytes, mode: str):
         text = result["name"]
 
         if not text:
-            return JSONResponse({
+            return {
                 "ok": False,
                 "error": "recognition_failed",
                 "reason": result["reason"],
-            })
+            }, 200
 
         payload = {
             "ok": True,
@@ -366,22 +410,135 @@ def handle(image_bytes: bytes, mode: str):
         }
 
         print(f"[응답] {text} / {payload['cell_count']}셀 / {payload['braille_preview']}")
-        return JSONResponse(payload)
+        return payload, 200
 
     except GeminiCallError as e:
         status_map = {"rate_limit": 429, "network_error": 502, "parse_failed": 500}
         print(f"[Gemini 에러] {e.error_code}: {e.reason}")
-        return JSONResponse(
+        return (
             {"ok": False, "error": e.error_code, "reason": e.reason},
-            status_code=status_map.get(e.error_code, 500),
+            status_map.get(e.error_code, 500),
         )
 
     except Exception as e:
         print(f"[에러] {type(e).__name__}: {e}")
-        return JSONResponse(
-            {"ok": False, "error": str(e)},
-            status_code=500,
+        return {"ok": False, "error": str(e)}, 500
+
+
+def handle(image_bytes: bytes, mode: str) -> JSONResponse:
+    """앱용 응답 (지금까지와 같은 형식)."""
+    payload, status = _process(image_bytes, mode)
+    return JSONResponse(payload, status_code=status)
+
+
+# ─────────────────────────────────────────────
+# 기기(펌웨어)용 응답 — ?device=fw1 또는 fw2 를 붙였을 때
+#
+# 앱용 결과에서 다음만 바꾼다 (자세한 약속은 mirror.py 맨 위).
+#   - braille       : 거울 모양 (칸 안의 좌우 열만 바꿈. 칸·줄 순서는 그대로)
+#   - braille_preview: 뺀다 (기기는 읽지 않고, 거울인지 헷갈리므로)
+#   - speech_id     : 펌웨어 1 에만. 음성을 응답 전에 만들어 두고 번호를 붙인다.
+#                     만들지 못하면 붙이지 않는다 (ESP32 가 /speech?text= 로 대신 받는다)
+#   - mirrored      : true (성공 응답에만)
+# 실패 응답은 앱용과 같은 내용에 speech_id(실패 안내 음성)만 더한다. HTTP 상태 코드도 같다.
+# ─────────────────────────────────────────────
+
+# 실패 음성: reason 뒤에 붙이는 안내 문장
+RETAKE_GUIDE = "다시 찍어 주세요."          # 사진을 다시 찍으면 나아질 수 있는 실패
+RETRY_GUIDE = "잠시 후 다시 눌러 주세요."   # 서버·AI 쪽 문제
+# RETAKE_GUIDE 를 쓰는 error. 여기 없는 error(rate_limit, network_error, parse_failed,
+# 예기치 못한 서버 오류 등)는 모두 RETRY_GUIDE
+RETAKE_ERRORS = {"recognition_failed", "invalid_image"}
+# 기기 설정이 잘못된 요청. 다시 찍거나 눌러도 결과가 같으므로 음성을 만들지 않는다
+CONFIG_ERRORS = {"invalid_mode", "invalid_device"}
+
+
+def _check_device(device: str, mode: str) -> Optional[JSONResponse]:
+    """device 가 맞지 않으면 400 invalid_device 응답, 맞으면 None.
+
+    mode 자체가 잘못된 경우는 여기서 보지 않는다 (invalid_mode 가 먼저 나간다).
+    """
+    if device not in DEVICE_MODES:
+        return _invalid_device_response(
+            f"device는 {sorted(DEVICE_MODES)} 중 하나여야 합니다 (받은 값: '{device}')"
         )
+    if mode in VALID_MODES and DEVICE_MODES[device] != mode:
+        return _invalid_device_response(
+            f"device '{device}'는 mode '{DEVICE_MODES[device]}' 전용입니다 (받은 mode: '{mode}')"
+        )
+    return None
+
+
+def _success_speech_text(text: str, reason: str) -> str:
+    """성공 음성 문장: "{text}입니다. {reason}". text 가 비면 reason 만. 200자까지."""
+    text = (text or "").strip()
+    reason = (reason or "").strip()
+    sentence = f"{text}입니다." if text else ""
+    if reason:
+        sentence = f"{sentence} {reason}".strip()
+    return sentence[:MAX_SPEECH_TEXT_LENGTH].strip()
+
+
+def _failure_speech_text(error: str, reason: str) -> str:
+    """실패 음성 문장: reason + 안내 문장 (어느 안내인지는 RETAKE_ERRORS 로 정한다).
+
+    200자를 넘으면 reason 쪽을 잘라 안내 문장은 항상 남긴다.
+    """
+    retake = error in RETAKE_ERRORS
+    guide = RETAKE_GUIDE if retake else RETRY_GUIDE
+    reason = (reason or "").strip()
+    if not reason:
+        reason = "인식하지 못했습니다." if retake else "서버에서 문제가 생겼습니다."
+    if reason[-1] not in ".!?":
+        reason += "."
+    room = MAX_SPEECH_TEXT_LENGTH - len(guide) - 1   # 1 = 사이 공백
+    if len(reason) > room:
+        reason = reason[:room - 1].rstrip() + "."
+    return f"{reason} {guide}"
+
+
+def _device_response(payload: dict, status: int, device: str) -> JSONResponse:
+    """앱용 결과(payload, status) → 기기용 응답.
+
+    펌웨어 1이면 음성을 만드느라 수 초 걸리므로 스레드(run_in_threadpool)에서 부를 것.
+    """
+    speaks = device in SPEECH_DEVICES
+
+    if not payload.get("ok"):
+        out = dict(payload)
+        if speaks and out.get("error") not in CONFIG_ERRORS:
+            speech_id = speech_store.create_ready(
+                _failure_speech_text(out.get("error", ""), out.get("reason", ""))
+            )
+            if speech_id:
+                out["speech_id"] = speech_id
+        return JSONResponse(out, status_code=status)
+
+    out = {
+        "ok": True,
+        "text": payload["text"],
+        "reason": payload["reason"],
+        "braille": mirror.mirror_braille(payload["braille"]),
+        "cell_count": payload["cell_count"],
+    }
+    if speaks:
+        speech_id = speech_store.create_ready(_success_speech_text(payload["text"], payload["reason"]))
+        if speech_id:
+            out["speech_id"] = speech_id
+    out["mirrored"] = True
+    print(f"[기기 응답] {device} / {out['cell_count']}셀 거울 / speech_id={out.get('speech_id')}")
+    return JSONResponse(out, status_code=status)
+
+
+def _handle_for_device(image_bytes: bytes, mode: str, device: str) -> JSONResponse:
+    """/process-file?device= 의 처리. 스레드에서 부를 것."""
+    if mode not in VALID_MODES:
+        return _invalid_mode_response(mode)
+    error = _check_device(device, mode)
+    if error is not None:
+        return error
+    payload, status = _process(image_bytes, mode)
+    return _device_response(payload, status, device)
 
 
 # ─────────────────────────────────────────────
@@ -426,15 +583,25 @@ def speech(text: str = ""):
     try:
         pcm = text_to_pcm(text)
     except SpeechError as e:
-        status_map = {"tts_unavailable": 503, "conversion_failed": 500}
-        print(f"[음성 에러] {e.error_code}: {e.reason}")
-        return JSONResponse(
-            {"ok": False, "error": e.error_code, "reason": e.reason},
-            status_code=status_map.get(e.error_code, 500),
-        )
+        return _speech_error_response(e)
 
+    return _pcm_response(pcm, text)
+
+
+def _speech_error_response(e: SpeechError) -> JSONResponse:
+    """음성 생성 실패 → JSON 오류 (/speech 와 /speech/{speech_id} 가 같이 쓴다)."""
+    status_map = {"tts_unavailable": 503, "conversion_failed": 500}
+    print(f"[음성 에러] {e.error_code}: {e.reason}")
+    return JSONResponse(
+        {"ok": False, "error": e.error_code, "reason": e.reason},
+        status_code=status_map.get(e.error_code, 500),
+    )
+
+
+def _pcm_response(pcm: bytes, label: str) -> Response:
+    """PCM 바이트 → 오디오 응답 (/speech 와 /speech/{speech_id} 가 같이 쓴다)."""
     duration = estimate_duration(pcm)
-    print(f"[음성] {text} / {len(pcm)} bytes / {duration:.3f}초")
+    print(f"[음성] {label} / {len(pcm)} bytes / {duration:.3f}초")
     return Response(
         content=pcm,
         media_type="application/octet-stream",
@@ -442,6 +609,31 @@ def speech(text: str = ""):
         # 정확한 바이트 수는 자동으로 붙는 Content-Length를 쓰면 된다.
         headers={"X-Audio-Duration": f"{duration:.3f}"},
     )
+
+
+@app.get("/speech/{speech_id}")
+def speech_by_id(speech_id: str):
+    """음성 번호로 음성 받기 (펌웨어 1 전용).
+
+    번호는 /process-file·/process-mock?device=fw1 응답과 /jobs/next?device=fw1 작업에 붙는다.
+    형식·헤더·오류는 GET /speech 와 같다. 없는 번호(만료 포함)는 404 unknown_speech.
+    서버가 아직 음성을 만드는 중이면 끝날 때까지 기다린다 (최대 speech_store.WAIT_SECONDS).
+    """
+    try:
+        pcm = speech_store.get(speech_id)
+    except speech_store.UnknownSpeech:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "unknown_speech",
+                "reason": "그런 speech_id가 없습니다 (잘못된 번호이거나 10분이 지나 지워졌습니다).",
+            },
+            status_code=404,
+        )
+    except SpeechError as e:
+        return _speech_error_response(e)
+
+    return _pcm_response(pcm, f"/speech/{speech_id}")
 
 
 # ─────────────────────────────────────────────
@@ -526,3 +718,156 @@ def translate(body: TranslateRequest):
     }
     print(f"[점역] mode={mode} / {text} / {payload['cell_count']}셀")
     return JSONResponse(payload)
+
+
+# ─────────────────────────────────────────────
+# 엔드포인트 7~10: 폴링 — 앱 "출력하기" → 기기 (docs/POLLING_API.md 1~4장)
+#
+#   앱    POST /print              → 서버 대기열 (기기별: label → fw1, book → fw2)
+#   기기  GET  /jobs/next?device=  → 작업 하나 (거울 점자, fw1 은 speech_id)
+#   기기  POST /jobs/{id}/done     → 결과 보고
+#   확인  GET  /jobs               → 대기·진행 중·최근 기록
+#
+# 대기열에는 앱이 보낸 원래 점자를 그대로 두고, 기기에 줄 때 거울로 바꾼다.
+# ─────────────────────────────────────────────
+job_queue = JobQueue(DEVICE_MODES)
+
+
+class PrintRequest(BaseModel):
+    """/print 요청 본문. 예: {"mode":"label", "text":"우유", "reason":"…", "braille":[13,41]}
+
+    앱은 결과 화면에서 받은 값을 그대로 보낸다 (점역을 다시 하지 않는다).
+    빠진 값도 FastAPI 기본 오류(422)가 아니라 {ok, error, reason} 로 답하도록 모두 생략 가능하게 둔다.
+    """
+    mode: Optional[str] = None
+    text: Optional[str] = None
+    reason: Optional[str] = None
+    braille: Optional[Any] = None
+
+
+class DoneReport(BaseModel):
+    """/jobs/{id}/done 요청 본문. 예: {"device":"fw1", "ok":true, "error":""}"""
+    device: str
+    ok: bool
+    error: str = ""
+
+
+def _is_cell(value) -> bool:
+    """점자 칸 하나로 쓸 수 있는 값인지 (0~63 정수. bool 은 아님)."""
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 63
+
+
+def _braille_problem(braille, mode: str) -> Optional[str]:
+    """braille 의 모양·값이 틀리면 그 이유, 맞으면 None. (비었는지는 부르기 전에 따로 본다)
+
+    라벨: 칸 배열 (1차원). 책: 줄 배열 (2차원, 줄마다 칸이 하나 이상).
+    """
+    if not isinstance(braille, list):
+        return "braille은 배열이어야 합니다."
+    if mode == "book":
+        if not all(isinstance(line, list) and line for line in braille):
+            return "책 모드의 braille은 줄마다 칸이 하나 이상 있는 2차원 배열이어야 합니다."
+        cells = [value for line in braille for value in line]
+    else:
+        if any(isinstance(value, list) for value in braille):
+            return "라벨 모드의 braille은 1차원 배열이어야 합니다."
+        cells = braille
+    for value in cells:
+        if not _is_cell(value):
+            return f"칸 값은 0~63 정수여야 합니다 (받은 값: {value!r})."
+    return None
+
+
+def _cell_count(braille) -> int:
+    """전체 칸 수 (책은 모든 줄의 합)."""
+    if braille and isinstance(braille[0], list):
+        return sum(len(line) for line in braille)
+    return len(braille)
+
+
+@app.post("/print")
+def print_job(body: PrintRequest):
+    """앱 "출력하기" — 작업을 기기 대기열에 넣는다.
+
+    error 종류 (모두 HTTP 400):
+        invalid_mode    : mode 가 label/book 이 아님
+        missing_braille : braille 이 없거나 빈 배열
+        invalid_braille : 모양이 틀림(라벨 1차원 / 책 2차원) 또는 칸 값이 0~63 정수가 아님
+    """
+    mode = body.mode or "label"
+    if mode not in VALID_MODES:
+        return _invalid_mode_response(mode)
+
+    if not body.braille:
+        return JSONResponse(
+            {"ok": False, "error": "missing_braille", "reason": "출력할 점자 데이터가 없습니다."},
+            status_code=400,
+        )
+    problem = _braille_problem(body.braille, mode)
+    if problem:
+        return JSONResponse({"ok": False, "error": "invalid_braille", "reason": problem}, status_code=400)
+
+    device = MODE_DEVICES[mode]
+    job = {"mode": mode, "text": body.text or "", "reason": body.reason or "", "braille": body.braille}
+    if device in SPEECH_DEVICES:
+        # 앱을 기다리게 하지 않도록 음성은 뒤에서 만든다. 기기가 가져갈 무렵이면 대개 다 만들어져 있다
+        job["speech_id"] = speech_store.create(_success_speech_text(job["text"], job["reason"]))
+
+    job_id, waiting = job_queue.add(device, job)
+    print(f"[대기열] {device} ← {job_id} ({job['text']})")
+    return {"ok": True, "job_id": job_id, "device": device, "waiting": waiting}
+
+
+@app.get("/jobs/next")
+def jobs_next(device: str = ""):
+    """기기가 1초마다 "출력할 것 있나?" 묻는다. 한 번에 하나, 들어온 순서대로.
+
+    준 작업은 "진행 중"으로 옮기고 다시 주지 않는다 (완료 보고가 안 와도).
+    점자는 거울로 바꿔서 주고, 펌웨어 1 에는 speech_id 를 붙인다
+    (대기열에서 10분 넘게 기다려 번호가 만료됐으면 새로 붙인다).
+    기기는 2초만 기다리므로 여기서는 음성을 기다리지 않는다.
+    """
+    if device not in DEVICE_MODES:
+        return _invalid_device_response(
+            f"기기 이름은 {sorted(DEVICE_MODES)} 중 하나여야 합니다 (받은 값: '{device}')"
+        )
+
+    job = job_queue.take_next(device)
+    if job is None:
+        return {"ok": True, "job": None}
+
+    out = {
+        "id": job["id"],
+        "mode": job["mode"],
+        "text": job["text"],
+        "reason": job["reason"],
+        "braille": mirror.mirror_braille(job["braille"]),
+        "cell_count": _cell_count(job["braille"]),
+    }
+    if device in SPEECH_DEVICES:
+        speech_id = speech_store.ensure(job.get("speech_id"), _success_speech_text(job["text"], job["reason"]))
+        if speech_id:
+            out["speech_id"] = speech_id
+    out["mirrored"] = True
+
+    print(f"[전달] {device} → {job['id']}")
+    return {"ok": True, "job": out}
+
+
+@app.post("/jobs/{job_id}/done")
+def job_done(job_id: str, report: DoneReport):
+    """기기의 결과 보고. error: print_failed / bad_braille / cancelled (POLLING_API.md 3장)."""
+    took = job_queue.finish(job_id, report.device, report.ok, report.error)
+    if took is None:
+        return JSONResponse(
+            {"ok": False, "error": "unknown_job", "reason": "진행 중인 작업이 아닙니다."},
+            status_code=404,
+        )
+    print(f"[완료] {job_id} ok={report.ok} {report.error} ({took}초)")
+    return {"ok": True}
+
+
+@app.get("/jobs")
+def jobs_status():
+    """지금 상태 한눈에 보기 (브라우저로 열어도 된다)."""
+    return job_queue.status()
