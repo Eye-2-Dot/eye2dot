@@ -43,14 +43,17 @@
 서버 생존 확인.
 
 ```json
-{ "status": "ok", "model": "gemini-2.5-flash" }
+{ "status": "ok", "model": "gemini-3.1-flash-lite" }
 ```
+
+`model`은 서버가 쓰는 Gemini 모델 이름이다 (`server/main.py`의 `MODEL`).
 
 ---
 
 ## `POST /process`
 
-ESP32-CAM 전용. 원본 JPEG 바이트를 그대로 본문에 넣는다.
+JPEG 바이트를 multipart 로 감싸지 않고 그대로 본문에 넣는 주소. `mode`는 쿼리로만 받는다.
+**지금은 앱도 펌웨어도 쓰지 않는다** (앱 = `/process-file`, 펌웨어 1 = `/process-file` 또는 `/process-mock`).
 
 ```
 POST /process?mode=label
@@ -59,14 +62,18 @@ Content-Type: image/jpeg
 <JPEG 바이너리>
 ```
 
+> **알려진 점**: 본문이 비어 있으면 400 이지만, 다른 오류와 달리 `{ok, error, reason}` 이 아니라 FastAPI 기본 형식 `{"detail": "이미지가 비어 있습니다"}` 로 답한다.
+
 ## `POST /process-file`
 
-브라우저·앱 테스트용. `multipart/form-data`.
+앱과 펌웨어 1이 쓰는 촬영 주소. `multipart/form-data`. 서버의 `/docs` 화면에서 파일을 올려 시험할 때도 쓴다.
 
 | 필드 | 위치 | 필수 | 설명 |
 |---|---|---|---|
-| `mode` | form | 아니오 (기본 `label`) | `label` 또는 `book` |
+| `mode` | 쿼리 또는 form | 아니오 (기본 `label`) | `label` 또는 `book`. **쿼리(`?mode=`)를 먼저 보고**, 없으면 form 필드, 둘 다 없으면 `label`. 빈 값(`?mode=`)은 없는 것으로 본다 |
 | `image` | form (파일) | **예** | 이미지 파일 |
+
+앱은 쿼리로 보내고 (`POST /process-file?mode=label`), 펌웨어 1은 쿼리와 form 둘 다에 넣는다.
 
 ## `POST /process-mock`
 
@@ -84,17 +91,43 @@ POST /process-mock?mode=book
 
 응답 형식은 `/process-file`과 **완전히 동일**하다. 앱은 나중에 주소에서 `-mock`만 떼면 그대로 실서버로 전환된다.
 
+## `POST /translate`
+
+**사진 없이 텍스트만 점역한다** (앱의 "라벨 문구 직접 입력하기"용). Gemini를 부르지 않는다. `application/json`.
+
+```
+POST /translate
+Content-Type: application/json
+
+{"text": "우유", "mode": "label"}
+```
+
+| 필드 | 필수 | 설명 |
+|---|---|---|
+| `text` | **예** | 점역할 글. 앞뒤 공백만 뗀다 (책 본문 중간의 `\n`은 줄 나누기에 쓰이므로 그대로 둔다). **라벨 50자 / 책 2000자 이하** |
+| `mode` | 아니오 (기본 `label`) | `label` 또는 `book` |
+
+성공 응답은 아래 "성공 응답"과 같은 형식이고, `text`는 입력한 글, `reason`은 항상 `"직접 입력한 문구입니다."` 다.
+
+실패는 모두 HTTP 400 + `{ok: false, error, reason}`:
+
+| `error` | 발생 조건 |
+|---|---|
+| `invalid_mode` | `mode`가 `label`/`book`이 아님 |
+| `missing_text` | `text`가 없거나 공백뿐, 또는 점자로 바꿀 글자가 없음 (문장부호만 있는 경우 등) |
+| `text_too_long` | 라벨 50자 / 책 2000자 초과 |
+
 ---
 
 ## 성공 응답
 
-세 엔드포인트(`/process`, `/process-file`, `/process-mock`)가 모두 같은 형식을 쓴다.
+네 엔드포인트(`/process`, `/process-file`, `/process-mock`, `/translate`)가 모두 같은 형식을 쓴다.
 
 | 키 | 타입 | 설명 |
 |---|---|---|
 | `ok` | bool | 항상 `true` |
-| `text` | 인식된 텍스트. 앱은 화면 표시, 펌웨어 1은 음성 안내에 사용. `book`은 개행(`\n`)이 그대로 남아 있다 |
-| `reason` | 판단 근거 1문장. 펌웨어 1이 음성으로 읽어준다. 앱은 표시하지 않아도 된다 |
+| `text` | string | 인식된 텍스트. 앱은 화면 표시, 펌웨어 1은 음성 안내에 사용. `book`은 개행(`\n`)이 그대로 남아 있다 |
+| `reason` | string | 판단 근거 1문장. 펌웨어 1이 음성으로 읽어준다. 앱은 표시하지 않아도 된다 |
 | `braille` | **모드에 따라 다름** | 아래 참고 |
 | `braille_preview` | string | 사람이 눈으로 확인하는 유니코드 점자. `book`은 줄바꿈으로 이어 붙인다 |
 | `cell_count` | int | 전체 점자 셀 수 (`book`은 모든 줄의 합) |
@@ -195,10 +228,12 @@ GET /speech?text=%EC%9A%B0%EC%9C%A0
 ```
 
 - `%EC%9A%B0%EC%9C%A0`은 "우유"다. 한글 한 글자는 UTF-8로 3바이트라서 인코딩하면 `%XX` 3개, 9글자가 된다. 200자면 URL이 약 1.8KB.
+- 인코딩 규칙: 영문·숫자와 `- _ . ~`는 그대로, 나머지 바이트(공백 포함)는 `%XX`. 펌웨어 1의 구현은 `firmware1/cam/src/net.cpp`의 `urlEncode()`.
 - 200자는 **글자 수** 기준이다 (UTF-8 바이트 수가 아니다). 한글 한 글자도 1자.
 - 서버가 Microsoft 음성 서버(edge-tts)를 거쳐 음성을 만들므로 **서버에 인터넷이 연결되어 있어야 한다.**
 - 한 번 만든 텍스트는 서버가 기억해 두었다가(최근 64개) 다음부터 바로 돌려준다.
-- 처음 요청하는 텍스트는 음성을 만드느라 수 초가 걸릴 수 있다. 서버는 음성 생성에 최대 15초, 변환에 최대 10초까지 기다린다. **기기의 HTTP 타임아웃은 30초 정도로 넉넉히** 잡을 것.
+- 처음 요청하는 텍스트는 음성을 만드느라 수 초가 걸릴 수 있다. 서버는 음성 생성에 최대 15초, 변환에 최대 10초까지 기다린다.
+- **펌웨어 1은 요청부터 10초 안에 다 못 받으면 음성 없이 진행한다** (점자는 그대로 출력. `firmware1/cam/include/net.h`의 `SPEECH_TIMEOUT_MS`). 서버가 음성을 늦게 만들면 가끔 음성이 빠질 수 있다는 뜻이다. 음성을 꼭 받아야 하는 클라이언트라면 시간 초과를 30초 정도로 잡을 것.
 
 ### 성공 응답 (200)
 
@@ -222,6 +257,8 @@ x-audio-duration: 1.500
 
 ### 오디오 형식
 
+**음성 형식은 이 표가 기준이다.** `GET /speech/{speech_id}`(`docs/POLLING_API.md`, 아직 실제 서버에 없음)와 펌웨어도 이 표를 따른다.
+
 | 항목 | 값 |
 |---|---|
 | 샘플레이트 | **8000 Hz** |
@@ -232,7 +269,7 @@ x-audio-duration: 1.500
 | 크기 | 1바이트 = 샘플 1개 = 1/8000초 → **1초 = 8000바이트** |
 
 - 받은 바이트를 순서대로, 1/8000초마다 한 개씩 8비트 PWM 듀티 값으로 그대로 쓰면 된다. 부호 변환이나 디코딩은 필요 없다.
-- 1.5초 음성이면 12,000바이트다. ATmega2560의 RAM(8KB)에는 **1초 분량도 다 들어가지 않으므로** 전부 받아두고 재생할 수 없다. 아래 재생 가이드처럼 받으면서 조금씩 재생해야 한다.
+- 1.5초 음성이면 12,000바이트다. ATmega2560의 RAM(8KB)에는 **1초 분량도 다 들어가지 않으므로** 전부 받아두고 재생할 수 없다. 펌웨어 1은 아래 "펌웨어 1이 받아 재생하는 방법"처럼 받으면서 조금씩 재생한다.
 
 ### 실패 응답
 
@@ -254,121 +291,35 @@ x-audio-duration: 1.500
 
 기기가 서버에 아예 접속하지 못하면(기기 쪽 네트워크 문제) HTTP 응답 자체가 오지 않는다. 이 경우는 기기의 연결 오류로 처리한다.
 
-### 펌웨어 재생 가이드 (ATmega2560)
+### 펌웨어 1이 받아 재생하는 방법 (ESP32-CAM → ATmega2560)
 
-> 아래 코드는 형식을 설명하기 위한 **참고 구현이며, 실제 하드웨어에서 검증하지 않았다.** 핀과 타이머 설정은 펌웨어(`firmware1/src/speech.cpp`)와 같다. 링 버퍼와 통신 부분은 아직 펌웨어에 없으므로 구현할 때 회로에 맞게 조정할 것.
-
-#### 전체 흐름
+실제 구현은 펌웨어에 있다. 이 절은 흐름과 코드 위치만 적는다.
 
 ```
-서버 ─HTTP─▶ 네트워크 칩(ESP32 등) ─UART─▶ ATmega2560 링 버퍼 ─8kHz 인터럽트─▶ PWM 핀 ─▶ RC 필터 ─▶ 앰프 ─▶ 스피커
+서버 ─HTTP─▶ ESP32-CAM ─시리얼 프레임(115200bps)─▶ ATmega2560 링 버퍼 1KB ─8kHz 인터럽트─▶ D11 PWM ─▶ RC 필터 ─▶ LM386 ─▶ 스피커
 ```
 
-1. 네트워크 칩이 `GET /speech`를 보낸다. 상태 코드가 200이 아니면 음성 없이 끝낸다.
-2. 받은 바이트를 ATmega로 흘려보낸다. ATmega는 링 버퍼에 쌓는다.
-3. 버퍼가 어느 정도(예: 512바이트 = 64ms) 차면 재생을 시작한다. 조금 모아두고 시작해야 전송이 잠깐 늦어져도 소리가 끊기지 않는다.
-4. 타이머 인터럽트가 1/8000초마다 버퍼에서 한 바이트씩 꺼내 PWM 듀티로 쓴다.
-5. `Content-Length`만큼 다 받고 버퍼도 비면 재생을 끝낸다.
+1. ESP32가 `GET /speech`로 음성을 PSRAM(ESP32의 추가 메모리)에 다 받는다. 상태 코드가 200이 아니거나 10초 안에 다 못 받으면 음성 없이 진행한다.
+2. ESP32가 음성을 최대 256바이트 조각으로 나눠 ATmega로 보낸다. ATmega는 링 버퍼(끝에 닿으면 처음으로 돌아가며 쓰는 저장 공간)에 자리가 생길 때마다 `'R'`로 다음 조각을 요청한다. 시리얼 전송(초당 약 11,520바이트)이 재생(초당 8000바이트)보다 빨라서 이렇게 속도를 맞춘다(흐름 제어).
+3. 버퍼가 절반(512바이트 = 64ms) 차면 재생을 시작한다. 조금 모아 두고 시작해야 전송이 잠깐 늦어져도 끊기지 않는다.
+4. 타이머 인터럽트가 1/8000초마다 한 바이트씩 꺼내 PWM 듀티(켜져 있는 시간의 비율)로 쓴다. 디코딩은 필요 없다.
 
-#### 전송할 때 주의할 숫자
+| 타이머 | 쓰임 (Arduino Mega, 16MHz) |
+|---|---|
+| Timer1 | 8비트 Fast PWM, 16MHz ÷ 256 = **62.5kHz** 반송파(소리를 싣는 바탕 신호, 귀에 들리지 않는 높이). 출력은 **D11(OC1A)** |
+| Timer2 | CTC 모드(정해진 값에 닿으면 0으로 돌아가며 인터럽트), 16MHz ÷ (8 × 250) = **정확히 8000Hz**마다 인터럽트 |
+| Timer0 | `millis()`·`delay()`용. 건드리지 않는다 |
 
-- UART로 넘긴다면 초당 8000바이트를 실시간으로 보내야 하므로 **115200bps 이상**이 필요하다 (8N1 기준 초당 약 11,520바이트).
-- 전송 속도(초당 약 11,520바이트)가 재생 속도(초당 8000바이트)보다 빠르다. 그냥 쏟아부으면 ATmega 버퍼가 넘치므로 **흐름 제어가 필요하다.** 예) ATmega가 버퍼에 여유가 생길 때마다 네트워크 칩에 "N바이트 더 보내라"고 요청한다.
-- Arduino `Serial`의 수신 버퍼는 64바이트뿐이라 115200bps로 받으면 약 5ms 만에 찬다. 재생 중에는 `loop()`에서 `delay()` 등으로 오래 멈추지 말고, 들어온 바이트를 계속 링 버퍼로 옮길 것.
-
-#### 타이머와 인터럽트 (Arduino Mega, 16MHz)
-
-펌웨어(`firmware1/src/speech.cpp`)와 같은 설정이다.
-
-- **Timer1**: 8비트 Fast PWM, 분주 없음 → 16MHz ÷ 256 = **62.5kHz** 반송파 (가청 주파수 밖). 출력은 **11번 핀(OC1A, PB5)**. 샘플 값(0~255)을 `OCR1A`에 그대로 쓰면 듀티비가 된다.
-- **Timer2**: CTC 모드(카운터가 정해진 값에 닿으면 0으로 돌아가며 인터럽트), 분주 8, `OCR2A = 249` → 16MHz ÷ (8 × 250) = **정확히 8000Hz**마다 인터럽트.
-- **Timer0**은 `millis()`·`delay()`가 쓰므로 건드리지 않는다.
-
-```cpp
-#include <util/atomic.h>
-
-#define SAMPLE_RATE 8000
-#define SILENCE     128
-#define PREBUFFER   512                 // 이만큼 모이면 재생 시작 (64ms)
-#define BUF_SIZE    1024                // 반드시 2의 거듭제곱 (1024바이트 = 128ms)
-#define BUF_MASK    (BUF_SIZE - 1)
-
-static uint8_t buf[BUF_SIZE];
-static volatile uint16_t head = 0;      // 다음에 쓸 위치. loop() 쪽만 바꾼다
-static volatile uint16_t tail = 0;      // 다음에 읽을 위치. 인터럽트만 바꾼다
-static volatile bool playing = false;
-
-void audioBegin() {
-  pinMode(11, OUTPUT);                  // OC1A. 출력 모드가 아니면 PWM이 핀 밖으로 나가지 않는다
-  noInterrupts();
-
-  // Timer1: 8비트 Fast PWM, 분주 없음 → 62.5kHz, 11번 핀(OC1A) 출력
-  TCCR1A = _BV(COM1A1) | _BV(WGM10);
-  TCCR1B = _BV(WGM12) | _BV(CS10);
-  TCNT1  = 0;
-  OCR1A  = SILENCE;
-
-  // Timer2: CTC, 분주 8 → 16MHz / (8 * (249 + 1)) = 8000Hz마다 인터럽트
-  TCCR2A = _BV(WGM21);
-  TCCR2B = _BV(CS21);
-  TCNT2  = 0;
-  OCR2A  = F_CPU / 8 / SAMPLE_RATE - 1; // 249
-  TIMSK2 = _BV(OCIE2A);
-
-  interrupts();
-}
-
-// 1/8000초마다: 샘플 한 바이트를 그대로 PWM 듀티로 쓴다
-ISR(TIMER2_COMPA_vect) {
-  if (playing && tail != head) {
-    OCR1A = buf[tail];
-    tail = (tail + 1) & BUF_MASK;
-  } else {
-    OCR1A = SILENCE;                    // 재생 전이거나 데이터가 늦으면 무음
-  }
-}
-
-// 받은 샘플을 버퍼에 넣는다. 가득 차 있으면 false (흐름 제어로 이런 일이 없게 할 것)
-bool audioPush(uint8_t sample) {
-  bool ok = false;
-  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {   // head·tail은 16비트라 인터럽트와 함께 쓸 때는 원자적으로
-    uint16_t next = (head + 1) & BUF_MASK;
-    if (next != tail) {
-      buf[head] = sample;
-      head = next;
-      ok = true;
-    }
-  }
-  return ok;
-}
-
-// 버퍼에 쌓인 바이트 수
-uint16_t audioBuffered() {
-  uint16_t n;
-  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-    n = (head - tail) & BUF_MASK;
-  }
-  return n;
-}
-
-// loop()에서 계속 호출. received = 지금까지 받은 바이트 수, total = Content-Length
-void audioUpdate(uint32_t received, uint32_t total) {
-  bool allReceived = (received >= total);
-  if (!playing && (audioBuffered() >= PREBUFFER || allReceived)) {
-    playing = true;                     // 충분히 모였거나, 짧은 음성을 다 받았으면 시작
-  }
-  if (playing && allReceived && audioBuffered() == 0) {
-    playing = false;                    // 끝까지 재생함
-  }
-}
-```
-
-- **함께 쓸 수 없는 기능** (Timer1·Timer2는 오디오 전용):
-  - Timer2: `tone()`, 9·10번 핀의 `analogWrite()`. 특히 10번 핀(OC2A)에 `analogWrite()`를 하면 `OCR2A`가 바뀌어 **샘플레이트가 달라진다.**
-  - Timer1: 11번 핀(오디오 출력 자체), 12번 핀의 `analogWrite()`.
-  - Timer0: `millis()`·`delay()`용이므로 설정을 바꾸지 말 것.
-  - 사용하는 라이브러리가 이 타이머를 쓰는지도 확인할 것. 핀 배치와 금지 목록은 `firmware1/include/pins.h`에도 적어 두었다.
+- Timer1·Timer2는 오디오 전용이라 `tone()`, D9~D12의 `analogWrite()`를 함께 쓸 수 없다. 전체 목록은 `pins.h` 맨 위.
 - 재생하지 않을 때도 PWM을 끄지 않고 무음(128)으로 켜 둔다. 출력이 0V와 중간 전압 사이를 갑자기 오가면 "딱" 소리가 나기 때문이다.
+
+| 코드 위치 | 내용 |
+|---|---|
+| `firmware1/mega/src/speech.cpp` | 타이머 설정, 링 버퍼, 8kHz 인터럽트, 소리 신호 표 |
+| `firmware1/mega/include/speech.h` | 재생 함수 설명, 링 버퍼 크기(`SPEECH_STREAM_BUFFER`) |
+| `firmware1/mega/include/pins.h` | 오디오 핀, 함께 쓸 수 없는 기능 목록 |
+| `firmware1/cam/src/net.cpp` | URL 인코딩(`urlEncode`), `GET /speech` 받기 |
+| `docs/POLLING_API.md` 7장 | 음성 프레임(`0x02`~`0x04`)과 `'R'` 흐름 제어 순서 |
 
 #### 출력 회로
 
@@ -385,30 +336,3 @@ void audioUpdate(uint32_t received, uint32_t total) {
 - **RC 필터**: 1kΩ 직렬, 0.047µF(47nF)는 저항 뒤에서 GND로. 차단 주파수 약 3.4kHz. 음성 대역(8kHz 샘플이 담을 수 있는 상한 4kHz)은 통과시키고 62.5kHz PWM 반송파는 걸러낸다.
 - **10µF 커플링 커패시터**(직류는 막고 소리 성분만 통과시키는 부품): 필터 출력에는 무음일 때도 약 2.5V의 직류가 실려 있으므로 앰프 입력 전에 막는다. 전해 커패시터라면 **+극을 필터 쪽**(전압이 높은 쪽)으로 둔다.
 - **LM386 모듈 볼륨은 최소에서 시작**해 조금씩 올린다. 필터 출력은 최대 약 5Vpp라 LM386 입력에 비해 크다.
-
-#### URL 인코딩 (네트워크 칩 쪽, 예: ESP32 Arduino)
-
-```cpp
-// UTF-8 문자열 → 퍼센트 인코딩. 영문·숫자와 - _ . ~ 는 그대로, 나머지 바이트는 %XX
-String urlEncode(const String& s) {
-  static const char hex[] = "0123456789ABCDEF";
-  String out;
-  out.reserve(s.length() * 3);
-  for (size_t i = 0; i < s.length(); i++) {
-    uint8_t c = (uint8_t)s[i];
-    bool plain = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                 c == '-' || c == '_' || c == '.' || c == '~';
-    if (plain) {
-      out += (char)c;
-    } else {
-      out += '%';
-      out += hex[c >> 4];
-      out += hex[c & 0x0F];
-    }
-  }
-  return out;
-}
-
-// 사용 예 (서버 주소는 환경에 맞게)
-String url = String("http://192.168.0.10:8000/speech?text=") + urlEncode(text);
-```
