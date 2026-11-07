@@ -9,16 +9,20 @@
 
 작업이 들어오는 입구는 두 개, 뒷부분은 하나다.
 
-1. **기기 촬영** — 촬영 버튼(D31) → Mega 가 ESP32 에 `'C'` → ESP32 촬영 → `/process-file` 로 전송 → 결과
+1. **기기 촬영** — 촬영 버튼(D31) → Mega 가 ESP32 에 `'C'` → ESP32 촬영 → `/process-file` 로 전송 (`USE_MOCK` 이 true 면 `/process-mock`) → 결과
 2. **앱 출력** — 앱 "출력하기" → 서버 대기열 → ESP32 가 할 일이 없을 때 1초마다 `/jobs/next` 로 확인
 
 공통: 점자·음성 → Mega 가 음성을 들려줌 → **출력 버튼(D32)** → 타각 → `'D'`
+
+> **`USE_MOCK` 기본값은 `true`** 다 (`cam/include/net.h`). 이때 ESP32 는 촬영해도 `/process-mock` 으로 보내
+> 늘 같은 가짜 결과('우유')를 받는다 (Gemini 를 부르지 않음).
+> **실제 Gemini 로 시험하려면 `false`** 로 바꿔 ESP32 를 다시 올린다. 서버의 `server/.env` 에 `GEMINI_API_KEY` 가 있어야 한다.
 
 ## 데이터 흐름
 
 ```
  서버 ──Wi-Fi(HTTP)──▶ ESP32-CAM ──UART(전선 3가닥)──▶ ATmega2560 ──▶ 스피커 / 솔레노이드
-   ▲   /process-file      │  점자·음성을 프레임으로        │   'C' 촬영해 달라
+   ▲   /process-file/mock │  점자·음성을 프레임으로        │   'C' 촬영해 달라
    │   /jobs/next         │                                 │   'R' 다음 음성 조각
    │   /speech            ◀─────────────────────────────────┘   'D' 출력 완료 / 'E' 실패·취소
    └── /jobs/{id}/done ◀── 결과 보고 (앱 작업)
@@ -87,8 +91,32 @@ firmware1/
 
 API·프레임 자세한 규격: 저장소 루트의 [`docs/POLLING_API.md`](../docs/POLLING_API.md).
 
-> **VS Code 에서는 `firmware1/mega` 또는 `firmware1/cam` 폴더를 열어야** PlatformIO 가 프로젝트로 인식한다.
-> 저장소 루트나 `firmware1/` 을 열면 인식하지 않는다. 두 칩을 번갈아 만질 때는 VS Code 창을 두 개 띄우면 편하다.
+## VS Code 에서 열기
+
+PlatformIO 는 `platformio.ini` 가 있는 폴더(`firmware1/mega`, `firmware1/cam`)만 프로젝트로 인식한다.
+저장소 루트만 열면 인식하지 못하고, 편집기가 `Arduino.h` 를 찾지 못해 탐색기에서 `firmware1` 이 빨간색으로 보인다 (빌드에는 영향 없음).
+
+**작업공간 파일**(여러 폴더를 한 창에 묶는 VS Code 파일)을 각자 하나 만들면 저장소 전체와 두 칩을 한 창에서 다룰 수 있다.
+
+1. 저장소 루트에 아래 내용을 `eye2dot.code-workspace` 처럼 저장한다 (이름은 자유, 확장자만 `.code-workspace`).
+2. VS Code 에서 **파일 → 파일에서 작업 영역 열기**(File → Open Workspace from File) 로 연다.
+
+```json
+{
+  "folders": [
+    { "path": "." },
+    { "path": "firmware1/mega" },
+    { "path": "firmware1/cam" }
+  ],
+  "settings": {}
+}
+```
+
+- 경로는 작업공간 파일이 있는 폴더 기준이다. 저장소 루트가 아닌 곳에 두면 경로를 그에 맞게 바꾼다.
+- **작업공간 파일은 git 에 올리지 않는다.** 루트 `.gitignore` 의 `*.code-workspace` 가 걸러 준다 (사람마다 컴퓨터·여는 폴더가 달라서).
+- 하단 바의 빌드·업로드 버튼은 PlatformIO 가 지금 고른 프로젝트(mega 또는 cam) 하나에만 적용된다. 누르기 전에 어느 쪽인지 확인하고,
+  헷갈리면 터미널에서 그 폴더로 `cd` 한 뒤 `pio run` 을 쓴다.
+- 작업공간 없이 `firmware1/mega` 나 `firmware1/cam` 폴더 하나만 열어도 된다.
 
 ## 배선
 
@@ -145,7 +173,7 @@ Mega D18 ──[ 1kΩ ]──┬──▶ ESP32 GPIO14
   (`upload_ports.ini` 는 커밋되지 않는다. 번호는 장치 관리자 → 포트, 또는 `pio device list`)
 - **한 번만** 바꿔 올리려면 `pio run -t upload --upload-port COM5`
 
-목 서버 ↔ 실제 AI 전환은 `cam/include/net.h` 의 `USE_MOCK`, 라벨 ↔ 책은 `DEVICE_MODE`.
+목 서버 ↔ 실제 AI 전환은 `cam/include/net.h` 의 `USE_MOCK` (기본값 true = 가짜 결과, 맨 위 안내 참고), 라벨 ↔ 책은 `DEVICE_MODE`.
 
 ## 시험 방법
 
@@ -211,17 +239,13 @@ curl -X POST http://127.0.0.1:8000/print -H "Content-Type: application/json" -d 
 시험 서버에는 촬영 주소(`/process-mock`·`/process-file`)가 없다. 기기 촬영은 실제 서버(`server/`)를 켜고 시험한다.
 시험 서버는 실제 서버와 포트(8000)가 같으니 하나만 켤 것.
 
-## 시리얼 약속 요약
+## 시리얼 약속
 
-값은 모두 `common/protocol.h` 에 있다 (두 칩이 같은 파일을 쓴다. 바꾸면 두 보드 모두 다시 올릴 것).
+두 칩 사이의 약속은 두 곳에만 적는다.
 
-- 115200bps 8N1, 프레임 = `[0xAA][종류][길이 2B][내용][검사값(XOR)]`
-- ESP32 → ATmega: `0x01` 점자, `0x02` 음성 시작, `0x03` 음성 조각(최대 256B), `0x04` 음성 끝, `0x05` 알림음
-- ATmega → ESP32 (1바이트): `'C'` 촬영해 달라, `'R'` 다음 조각, `'D'` 출력 완료, `'E'` 실패·취소. 재촬영은 `'E'` 다음에 바로 `'C'`
-- 음성: 8kHz 8비트 unsigned 모노. ATmega 는 1KB 링 버퍼에 받으면서 재생한다 (8KB RAM 에 음성 전체가 안 들어가므로)
-- 알림음 프레임의 종류(1 네트워크, 2 카메라, 3 그 밖)와 상관없이 ATmega 는 실패음을 낸다.
-- 시간: ESP32 는 `'C'` 를 받고 85초 안에 결과(점자 또는 알림음)를 보내고, ATmega 는 90초까지 기다린다.
-  작업이 오면 ATmega 는 115초, ESP32 는 120초까지 `'D'`/`'E'` 를 기다린다.
+- **값** (통신 속도, 프레임 종류 번호, 크기 한도, 시간 한도): [`common/protocol.h`](common/protocol.h).
+  두 칩이 같은 파일을 쓰므로 **바꾸면 두 보드 모두 다시 올릴 것.**
+- **모양과 순서** (프레임 구조, `'C'`·`'R'`·`'D'`·`'E'` 의 뜻, 촬영·작업 순서, 시간 초과 때 동작): [`docs/POLLING_API.md`](../docs/POLLING_API.md) 7장.
 
 ## 알려진 점
 
@@ -256,7 +280,8 @@ curl -X POST http://127.0.0.1:8000/print -H "Content-Type: application/json" -d 
 | 업로드 포트를 못 찾음 / 다른 보드에 올라감 | 위 "COM 포트" — `upload_ports.ini` 또는 `--upload-port` |
 | 소리가 안 남 (작업 중) | Mega 시리얼의 "프레임 정상/버림" 확인. 정상이 안 늘면 배선(TX↔RX 교차, GND 공통) |
 | 촬영 버튼을 누르면 준비음 뒤 90초 지나 실패음만 남 | ESP32 가 부팅 중이었거나, `ATMEGA_CONNECTED` 가 false, 또는 D18 → 분압 → GPIO14 배선 |
-| PlatformIO 가 프로젝트를 못 찾음 | VS Code 에서 `firmware1/mega` 또는 `firmware1/cam` 폴더를 열었는지 |
+| PlatformIO 가 프로젝트를 못 찾음 | 위 "VS Code 에서 열기"의 작업공간 파일로 열었는지, 또는 `firmware1/mega`·`firmware1/cam` 폴더를 직접 열었는지 |
+| 탐색기에서 `firmware1` 이 빨간색, `Arduino.h` 를 열 수 없다는 오류 | 저장소 루트만 열어서 생기는 편집기 표시 (빌드와 무관). 위 "VS Code 에서 열기"대로 작업공간 파일로 연다 |
 
 ## 남은 일
 
