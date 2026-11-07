@@ -17,11 +17,21 @@
 const int         SERVER_PORT = 8000;
 const bool        USE_MOCK    = true;      // 개발 중 true → 완성 후 false
 const char* const DEVICE_MODE = "label";   // 펌웨어 1 = "label", 펌웨어 2 = "book"
-const char* const DEVICE_ID   = "fw1";     // 폴링 때 서버에 밝히는 이름 (펌웨어 2 = "fw2")
+// 서버에 밝히는 기기 이름 (펌웨어 2 = "fw2"). 폴링(GET /jobs/next?device=)과
+// 촬영(POST /process-file?device=) 둘 다 이 값을 쓴다 → 서버가 거울 점자·음성 번호를 준다
+const char* const DEVICE_ID   = "fw1";
 
-// 음성: 이 시간 안에 다 못 받으면 음성 없이 진행. 이보다 크면 앞부분만 쓴다
+// 음성 받기 시간 제한 — 셋을 합친 약 33초 안에 다 못 받으면 음성 없이 진행한다
+//   연결     : 서버에 연결하는 데 기다리는 시간
+//   서버 응답 : 서버가 음성을 다 만들 때까지 기다리는 시간. 서버의 최대 대기(25초)와 같게
+//              (GET /speech/{id} 는 아직 만드는 중이면 25초까지 기다렸다가 준다)
+//   본문     : 응답이 온 뒤 오디오 본문(최대 512KB)을 다 받는 데 더 주는 시간
+const uint32_t SPEECH_CONNECT_TIMEOUT_MS = 3000;
+const uint32_t SPEECH_TIMEOUT_MS         = 25000;
+const uint32_t SPEECH_BODY_TIMEOUT_MS    = 5000;
+
+// 음성이 이보다 크면 앞부분만 쓴다.
 //   200자 문장은 약 30~40초(240~320KB)라 여유를 두고 512KB. 버퍼는 PSRAM 에 잡는다(net.cpp)
-const uint32_t SPEECH_TIMEOUT_MS = 10000;
 const size_t   SPEECH_MAX_BYTES  = 512 * 1024;   // 8kHz 기준 약 64초
 
 // Wi-Fi 에 연결한다 (연결될 때까지 기다림)
@@ -33,6 +43,7 @@ String baseUrl();
 void checkHealth();
 
 // 사진을 multipart 로 보내고 응답 본문을 받는다. 서버가 응답했으면 true (400·500 포함)
+// 주소에 ?mode=DEVICE_MODE&device=DEVICE_ID 를 붙여 기기용 응답(거울 점자 + speech_id)을 받는다
 // 연결 실패일 때만 최대 3번까지 다시 보낸다
 bool postPhoto(camera_fb_t* fb, String& response);
 

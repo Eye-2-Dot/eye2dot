@@ -7,7 +7,8 @@
  *
  * 작업이 들어오는 두 입구 (뒷부분은 같다)
  *   ① 촬영 — ATmega 가 촬영 버튼(D31)을 받아 'C' 를 보내면
- *            → 촬영 → POST /process-file → 결과 바로 받기
+ *            → 촬영 → POST /process-file?mode=label&device=fw1 → 결과 바로 받기
+ *            (device 를 붙이면 서버가 거울 모양 점자와 음성 번호 speech_id 를 준다)
  *            (ATmega 없이 시험할 때는 USB 시리얼에서 'c')
  *   ② 폴링 — 할 일이 없을 때 1초마다 GET /jobs/next 로 "출력할 것 있나?" 묻기
  *            (앱에서 "출력하기"를 누른 작업이 이쪽으로 온다)
@@ -115,7 +116,8 @@ void addResultFields(JsonObject f) {
   f["reason"]     = true;
 }
 
-// speech_id 는 문자열이든 숫자든 받아 들인다 (서버가 아직 정하지 않음)
+// speech_id 는 서버가 영문(a~f)·숫자 12자 문자열로 준다 (예: "4710c121fe89").
+// 숫자로 오는 경우도 혹시 몰라 받아 들인다.
 String speechIdOf(JsonVariantConst v) {
   if (v.is<const char*>()) return String(v.as<const char*>());
   if (v.is<long>())        return String(v.as<long>());
@@ -205,6 +207,8 @@ void checkCellCount(JsonVariantConst cellCount) {
 }
 
 // 받은 점자를 시리얼에 찍는다 (확인용)
+// 서버가 기기용으로 칸 안의 좌우를 바꾼 값(거울 값)을 주므로,
+// 여기 찍히는 유니코드 점자는 좌우가 뒤집힌 모양으로 보이는 게 정상이다.
 void printBraille() {
   for (int i = 0; i < g_braille.lineCount; i++) {
     Serial.printf("[점자 %d줄] ", i + 1);
@@ -397,7 +401,7 @@ void setup() {
   if (!camInit()) {
     Serial.println("카메라 초기화 실패. 리본 케이블과 전원을 확인하세요.");
     linkSendAlert(ALERT_CAMERA);
-    // 멈춰 있는 동안에도 촬영 요청에는 바로 실패를 알린다 (ATmega 가 90초 기다리지 않게)
+    // 멈춰 있는 동안에도 촬영 요청에는 바로 실패를 알린다 (ATmega 가 인식 중 115초를 다 기다리지 않게)
     while (true) {
       if (captureRequested()) linkSendAlert(ALERT_CAMERA);
       delay(50);

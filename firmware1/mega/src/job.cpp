@@ -226,7 +226,7 @@ static void updatePlaying(uint32_t now, bool capture, bool print) {
     speechStop();
   }
 
-  // ESP32 가 포기하기(120초) 조금 전에 먼저 'E' 를 보냅니다
+  // ESP32 가 포기하기(130초) 전에 먼저 'E' 를 보냅니다 (그 차이 안에서 타각이 끝나도록, protocol.h)
   if (now - startMs > LINK_JOB_TIMEOUT_MS) {
     failJob(F("시간 초과"));
     return;

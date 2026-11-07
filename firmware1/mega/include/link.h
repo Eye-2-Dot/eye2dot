@@ -22,7 +22,9 @@
 struct BrailleJob {
   uint8_t lineCount;                                    // 줄 수. 0 이면 "음성만 있는 작업"
   uint8_t lineLen[BRAILLE_MAX_LINES];                   // 줄별 칸 수
-  uint8_t cells[BRAILLE_MAX_LINES][BRAILLE_MAX_CELLS];  // 칸 값 = 6비트 마스크 (점1 = bit0 … 점6 = bit5)
+  // 칸 값 = 서버가 거울로 바꾼 6비트 값. bit0 = 위에서 볼 때 왼쪽 위 솔레노이드(1번) … bit5 = 6번.
+  //         뒤집지 않고 그대로 솔레노이드에 쓴다 (docs/api-spec.md 거울 약속)
+  uint8_t cells[BRAILLE_MAX_LINES][BRAILLE_MAX_CELLS];
 };
 
 // ─────────────────────────────────────────────

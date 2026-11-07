@@ -23,7 +23,10 @@ static const char* WIFI_SSID     = WIFI_SSID_VALUE;      // include/secrets.h
 static const char* WIFI_PASSWORD = WIFI_PASSWORD_VALUE;
 static const char* SERVER_IP     = SERVER_IP_VALUE;
 
-static const uint16_t HTTP_TIMEOUT_MS         = 45000;  // Gemini 응답 대기 (앱과 동일)
+// 사진 전송: 서버 응답을 기다리는 최대 시간.
+//   기기용 응답(?device=fw1)은 서버가 Gemini 인식 뒤 음성까지 미리 만들어(최대 25초) 답하므로
+//   앱(45초)보다 길게 잡는다.
+static const uint16_t HTTP_TIMEOUT_MS         = 60000;
 static const uint16_t POST_CONNECT_TIMEOUT_MS = 3000;   // 사진 전송: 서버에 연결하는 데 기다리는 최대 시간
 static const int      MAX_RETRY               = 3;      // 연결 실패일 때만 재시도
 static const uint16_t POLL_TIMEOUT_MS         = 2000;   // 폴링·완료 보고 한 번에 기다리는 최대 시간
@@ -92,12 +95,16 @@ bool postPhoto(camera_fb_t* fb, String& response) {
   memcpy(body + head.length() + fb->len, tail.c_str(), tail.length());
 
   // mode를 쿼리에도 넣는다 — 목/실제 주소가 어느 쪽을 읽든 동작하도록
+  // device 를 붙이면 서버가 기기용 응답을 준다: 거울 모양 점자 + 음성 번호(speech_id).
+  //   (docs/api-spec.md "기기용 응답". 폴링 GET /jobs/next 와 같은 기기 이름을 쓴다)
   String url = baseUrl();
   url += USE_MOCK ? "/process-mock" : "/process-file";
   url += "?mode=";
   url += DEVICE_MODE;
+  url += "&device=";
+  url += DEVICE_ID;
 
-  // 가장 오래 걸리는 경우 (연결 실패 3초 × 2 + 쉼 3초 + 응답 기다림 45초 + 업로드) 약 59초.
+  // 가장 오래 걸리는 경우 (연결 실패 3초 × 2 + 쉼 3초 + 업로드 약 2초 + 응답 기다림 60초) 약 71초.
   // ATmega 가 기다리는 시간(protocol.h 의 LINK_CAPTURE_TIMEOUT_MS)이 이 계산에 맞춰져 있으니,
   // 시간·횟수를 바꾸면 그 값도 함께 볼 것.
   int code = -1;
@@ -229,11 +236,13 @@ bool fetchSpeech(const char* speechId, const String& text, SpeechAudio& out) {
     return false;
   }
 
+  // 시간 제한 세 가지 (net.h): 연결 3초 / 서버 응답 25초 / 본문 받기 5초 → 최대 약 33초
   uint32_t t0 = millis();
+  const uint32_t totalMs = SPEECH_CONNECT_TIMEOUT_MS + SPEECH_TIMEOUT_MS + SPEECH_BODY_TIMEOUT_MS;
   HTTPClient http;
   http.begin(url);
-  http.setConnectTimeout(SPEECH_TIMEOUT_MS);
-  http.setTimeout(SPEECH_TIMEOUT_MS);   // 서버가 음성을 만드는 동안 기다리는 시간 포함
+  http.setConnectTimeout(SPEECH_CONNECT_TIMEOUT_MS);
+  http.setTimeout(SPEECH_TIMEOUT_MS);   // 서버가 음성을 다 만들 때까지 기다리는 시간 포함
   int code = http.GET();
 
   // 음성 API 는 성공일 때만 본문이 오디오다 (실패 본문은 JSON → 재생하면 잡음)
@@ -271,7 +280,7 @@ bool fetchSpeech(const char* speechId, const String& text, SpeechAudio& out) {
     return false;
   }
 
-  // 요청부터 SPEECH_TIMEOUT_MS 안에 다 받아야 한다
+  // 요청부터 totalMs(연결 + 서버 응답 + 본문) 안에 다 받아야 한다
   WiFiClient* stream = http.getStreamPtr();
   size_t got = 0;
   while (got < want) {
@@ -282,7 +291,7 @@ bool fetchSpeech(const char* speechId, const String& text, SpeechAudio& out) {
       got += stream->readBytes(buf + got, n);
       continue;
     }
-    if (!http.connected() || millis() - t0 > SPEECH_TIMEOUT_MS) {
+    if (!http.connected() || millis() - t0 > totalMs) {
       break;
     }
     delay(1);

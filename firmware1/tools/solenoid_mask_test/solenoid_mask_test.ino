@@ -5,17 +5,19 @@
  * ── 하는 일 ──────────────────────────────────────────
  *  시리얼 모니터로 숫자 하나(0~63)를 보내면,
  *  그 숫자를 6비트로 보고 1인 비트의 솔레노이드를 "동시에" 한 번 찍습니다.
+ *  숫자는 솔레노이드 비트 그대로입니다 (서버가 기기에 주는 거울 값과 같은 규칙).
  *
- *     비트 번호 :  5    4    3    2    1    0
- *     점 번호   : 점6  점5  점4  점3  점2  점1
- *     Mega 핀   : D27  D26  D25  D24  D23  D22
+ *     비트 번호     :   5     4     3     2     1     0
+ *     솔레노이드 번호:  6번   5번   4번   3번   2번   1번
+ *     Mega 핀       :  D27   D26   D25   D24   D23   D22
+ *     (1번 = 위에서 볼 때 왼쪽 위. 1·2·3 왼쪽 열, 4·5·6 오른쪽 열)
  *
- *  예)  7 = 0b000111 → 점1·점2·점3   (점자 왼쪽 세로줄 전부)
- *      63 = 0b111111 → 6점 전부
- *       1 = 0b000001 → 점1만
+ *  예)  7 = 0b000111 → 솔레노이드 1·2·3   (위에서 볼 때 왼쪽 열 전부)
+ *      63 = 0b111111 → 6개 전부
+ *       1 = 0b000001 → 솔레노이드 1번만
  *
  * ── 핀 (팀 핀 배치·배선표 11/6 기준) ─────────────────
- *  D22~D27 = PA0~PA5 → L298N #1 IN1~IN4, #2 IN1~IN2 → 솔레노이드 점1~점6
+ *  D22~D27 = PA0~PA5 → L298N #1 IN1~IN4, #2 IN1~IN2 → 솔레노이드 1~6번
  *  L298N ENA·ENB 점퍼는 꽂은 상태 그대로 (세기 조절 안 함)
  *
  *  D22~D27 이 칩 안에서 PORTA 의 0~5번 비트로 줄지어 있어서,
@@ -23,8 +25,8 @@
  *  → 받은 숫자의 비트 배치와 핀 배치가 똑같아서 그대로 써도 됩니다.
  *
  * ── 시리얼 모니터 (115200, 줄 끝: "새 줄" 또는 "Both NL & CR") ───────────────────────────
- *   0~63 숫자 + Enter : 그 점들을 동시에 1번 타각
- *   y                 : 점1 → 점6 하나씩 (배선·점 번호 확인용)
+ *   0~63 숫자 + Enter : 그 솔레노이드들을 동시에 1번 타각
+ *   y                 : 솔레노이드 1번 → 6번 하나씩 (배선·번호 확인용)
  *   ?                 : 도움말
  */
 
@@ -33,10 +35,15 @@
 // ─────────────────────────────────────────────
 // 설정
 // ─────────────────────────────────────────────
-const uint8_t  PIN_SOL[6]  = { 22, 23, 24, 25, 26, 27 };  // 점1 ~ 점6 (안내 출력용)
+// 이 스케치는 Arduino IDE 용이라 펌웨어 헤더를 include 하지 않고 값을 따로 적었습니다.
+// 아래 값을 바꾸면 펌웨어의 같은 값도 맞출 것:
+//   PIN_SOL      ↔ firmware1/mega/include/pins.h 의 PIN_SOL
+//   PULSE_MS     ↔ firmware1/mega/include/solenoid.h 의 SOL_PULSE_MS
+//   COOLDOWN_MS  ↔ firmware1/mega/include/solenoid.h 의 SOL_COOLDOWN_MS
+const uint8_t  PIN_SOL[6]  = { 22, 23, 24, 25, 26, 27 };  // 솔레노이드 1~6번 (안내 출력용) — pins.h 와 맞출 것
 const uint8_t  SOL_MASK    = 0x3F;   // PORTA 0~5번 비트 = 0b00111111
-const uint16_t PULSE_MS    = 30;     // 켜 두는 시간. 5V 솔레노이드에 약 9V가 걸리므로 짧게!
-const uint16_t COOLDOWN_MS = 200;    // 한 번 찍은 뒤 쉬는 시간 (코일 식히기 + 핀 복귀)
+const uint16_t PULSE_MS    = 30;     // 켜 두는 시간. 5V 솔레노이드에 약 9V가 걸리므로 짧게! — solenoid.h 와 맞출 것
+const uint16_t COOLDOWN_MS = 200;    // 한 번 찍은 뒤 쉬는 시간 (코일 식히기 + 핀 복귀) — solenoid.h 와 맞출 것
 
 // ─────────────────────────────────────────────
 // 솔레노이드 기본 동작
@@ -55,8 +62,8 @@ void solenoidInit() {
 
 /*
  * 한 칸 찍기
- *   mask : 6비트 숫자 (bit0 = 점1 … bit5 = 점6)
- *   예) punchMask(7) → 점1·2·3 동시에
+ *   mask : 6비트 숫자 (bit0 = 솔레노이드 1번 … bit5 = 6번)
+ *   예) punchMask(7) → 솔레노이드 1·2·3 동시에
  */
 void punchMask(uint8_t mask) {
   mask &= SOL_MASK;                  // 6비트만 사용 (64 이상이 와도 안전)
@@ -72,7 +79,7 @@ void punchMask(uint8_t mask) {
 // 화면 출력
 // ─────────────────────────────────────────────
 
-// 예) 7 → "7 = 0b000111 → 점1 점2 점3"
+// 예) 7 → "7 = 0b000111 → 솔레노이드1(D22) 솔레노이드2(D23) 솔레노이드3(D24)"
 void printMask(uint8_t mask) {
   Serial.print(mask);
   Serial.print(F(" = 0b"));
@@ -85,7 +92,7 @@ void printMask(uint8_t mask) {
   }
   for (uint8_t dot = 0; dot < 6; dot++) {
     if (mask & (1 << dot)) {
-      Serial.print(F("점"));
+      Serial.print(F("솔레노이드"));
       Serial.print(dot + 1);
       Serial.print(F("(D"));
       Serial.print(PIN_SOL[dot]);
@@ -97,9 +104,9 @@ void printMask(uint8_t mask) {
 
 void printHelp() {
   Serial.println(F("────── 솔레노이드 6비트 마스크 테스트 ──────"));
-  Serial.println(F("  0~63 숫자 + Enter : 그 점들을 동시에 1번"));
-  Serial.println(F("     예) 7 → 점1·2·3,  63 → 6점 전부,  1 → 점1"));
-  Serial.println(F("  y : 점1 -> 점6 하나씩 (배선 확인)"));
+  Serial.println(F("  0~63 숫자 + Enter : 그 솔레노이드들을 동시에 1번"));
+  Serial.println(F("     예) 7 → 솔레노이드 1·2·3,  63 → 6개 전부,  1 → 1번만"));
+  Serial.println(F("  y : 솔레노이드 1번 -> 6번 하나씩 (배선 확인)"));
   Serial.println(F("  ? : 도움말"));
 }
 
@@ -145,7 +152,7 @@ void loop() {
     }
     else if (c == 'y') {
       number = -1;
-      Serial.println(F("점1 -> 점6 하나씩"));
+      Serial.println(F("솔레노이드 1번 -> 6번 하나씩"));
       for (uint8_t dot = 0; dot < 6; dot++) {
         Serial.print(F("  "));
         printMask(1 << dot);

@@ -35,7 +35,7 @@ bool punchBraille(const BrailleJob& job) {
       Serial.print(col + 1);
       Serial.print(F(" = "));
       Serial.print(mask);
-      Serial.print(F(" -> 점 "));
+      Serial.print(F(" -> 솔레노이드 "));
 
       bool any = false;
       for (uint8_t dot = 0; dot < 6; dot++) {
