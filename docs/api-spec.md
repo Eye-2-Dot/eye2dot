@@ -271,6 +271,7 @@ Content-Type: application/json
 | `recognition_failed`, `invalid_image` | ` 다시 찍어 주세요.` (사진을 다시 찍으면 나아질 수 있음) | `인식하지 못했습니다.` |
 | `rate_limit`, `network_error`, `parse_failed`, 그 밖의 서버 오류 | ` 잠시 후 다시 눌러 주세요.` (서버·AI 쪽 문제) | `서버에서 문제가 생겼습니다.` |
 | `invalid_mode`, `invalid_device` | 음성 없음 (기기 설정 오류라 다시 해도 같다) | — |
+| (위 모든 경우) reason에 이미 **"다시"** 가 들어 있음 | **붙이지 않는다** (겹침 방지. 예: `rate_limit`의 "…잠시 후 다시 시도하세요.") | — |
 
 - 문장은 200자(`GET /speech`의 한도)까지. 넘으면 성공은 뒤를 자르고, 실패는 reason을 잘라 안내 문장을 남긴다.
 

@@ -451,6 +451,9 @@ RETRY_GUIDE = "잠시 후 다시 눌러 주세요."   # 서버·AI 쪽 문제
 RETAKE_ERRORS = {"recognition_failed", "invalid_image"}
 # 기기 설정이 잘못된 요청. 다시 찍거나 눌러도 결과가 같으므로 음성을 만들지 않는다
 CONFIG_ERRORS = {"invalid_mode", "invalid_device"}
+# reason 에 이 말이 이미 있으면 안내 문장을 붙이지 않는다 (겹침 방지).
+# 예: rate_limit 의 reason "…잠시 후 다시 시도하세요." 뒤에 "잠시 후 다시 눌러 주세요." 가 또 붙는 것
+GUIDE_ALREADY_WORD = "다시"
 
 
 def _check_device(device: str, mode: str) -> Optional[JSONResponse]:
@@ -482,6 +485,7 @@ def _success_speech_text(text: str, reason: str) -> str:
 def _failure_speech_text(error: str, reason: str) -> str:
     """실패 음성 문장: reason + 안내 문장 (어느 안내인지는 RETAKE_ERRORS 로 정한다).
 
+    reason 에 이미 "다시"(GUIDE_ALREADY_WORD)가 들어 있으면 안내 문장을 붙이지 않는다.
     200자를 넘으면 reason 쪽을 잘라 안내 문장은 항상 남긴다.
     """
     retake = error in RETAKE_ERRORS
@@ -491,6 +495,10 @@ def _failure_speech_text(error: str, reason: str) -> str:
         reason = "인식하지 못했습니다." if retake else "서버에서 문제가 생겼습니다."
     if reason[-1] not in ".!?":
         reason += "."
+    if GUIDE_ALREADY_WORD in reason:
+        if len(reason) > MAX_SPEECH_TEXT_LENGTH:
+            reason = reason[:MAX_SPEECH_TEXT_LENGTH - 1].rstrip() + "."
+        return reason
     room = MAX_SPEECH_TEXT_LENGTH - len(guide) - 1   # 1 = 사이 공백
     if len(reason) > room:
         reason = reason[:room - 1].rstrip() + "."
