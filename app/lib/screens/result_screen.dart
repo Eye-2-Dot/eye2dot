@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../constants.dart';
+import '../services/api_service.dart';
 
 /// 결과 화면 — 인식·점역 결과를 확인하고 출력을 요청하는 화면
 ///
@@ -37,7 +40,8 @@ class ResultScreen extends StatelessWidget {
   final String? reason;
 
   /// 점자 셀 배열. 셀 하나는 6비트 정수(점 n번 = 비트 n-1, 0은 빈 칸).
-  /// 펌웨어로 보낼 데이터다.
+  /// 펌웨어로 보낼 데이터다. 출력하기를 누르면 이 값을 **그대로** 서버(POST /print)로 보낸다.
+  /// 기기용 거울 모양으로 바꾸는 일은 서버가 한다.
   ///   label: `List<int>`          예: [13, 41]
   ///   book : `List<List<int>>`    줄 단위, 한 줄 최대 30셀
   final dynamic braille;
@@ -66,18 +70,6 @@ class ResultScreen extends StatelessWidget {
     return null;
   }
 
-  /// 출력 요청. 지금은 안내만 표시한다.
-  void _requestPrint(BuildContext context) {
-    // TODO(D): 실제 기기로 출력 데이터를 보낼 것 (다음 단계)
-    //   라벨 모드 → 펌웨어 1(라벨 출력기): 점자 배열 braille(List<int>) + 음성 데이터
-    //              음성은 서버 GET /speech 가 만든다 (읽어 줄 내용: text, reason)
-    //   책 모드   → A4 출력기: 점자 배열 braille(List<List<int>>)만
-    //              바깥 배열의 원소 하나가 출력물의 한 줄이다
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('출력 요청을 보냈습니다')));
-  }
-
   @override
   Widget build(BuildContext context) {
     final isBook = mode == kModeBook;
@@ -86,16 +78,19 @@ class ResultScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: Text(title)),
       body: SafeArea(
+        // 내용이 길면 이 영역만 세로로 스크롤된다
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: isBook ? _buildBookContent(context) : _buildLabelContent(context),
+        ),
+      ),
+      // 버튼은 스크롤과 상관없이 항상 화면 아래에 고정.
+      // bottomNavigationBar 자리에 두어야 출력 결과 알림(SnackBar)이 버튼을 가리지 않고 그 위에 뜬다.
+      // (body 안에 두면 알림이 떠 있는 몇 초 동안 버튼을 누를 수 없다)
+      bottomNavigationBar: SafeArea(
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            // 내용이 길면 이 영역만 세로로 스크롤된다
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: isBook ? _buildBookContent(context) : _buildLabelContent(context),
-              ),
-            ),
-            // 버튼은 스크롤과 상관없이 항상 화면 아래에 고정
             const Divider(height: 1),
             _buildButtons(context),
           ],
@@ -247,11 +242,13 @@ class ResultScreen extends StatelessWidget {
               Expanded(
                 child: SizedBox(
                   height: 56,
-                  child: FilledButton.icon(
-                    // 출력할 데이터가 없으면 비활성화 (onPressed 가 null 이면 회색으로 눌리지 않는다)
-                    onPressed: _canPrint ? () => _requestPrint(context) : null,
-                    icon: const Icon(Icons.print),
-                    label: const Text('출력하기', style: TextStyle(fontSize: 16)),
+                  // 출력할 데이터가 없으면 비활성화 (회색으로 눌리지 않는다)
+                  child: _PrintButton(
+                    enabled: _canPrint,
+                    mode: mode,
+                    text: text,
+                    reason: reason,
+                    braille: braille,
                   ),
                 ),
               ),
@@ -266,6 +263,155 @@ class ResultScreen extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 출력 버튼 — 서버에 출력 요청(POST /print)을 보낸다
+//
+// 결과 화면 전체는 상태 없는 위젯으로 두고, 상태가 필요한 이 버튼만 따로 뺐다.
+//   보내는 동안 : 잠그고 진행 표시 (두 번 눌러 작업이 두 개 생기지 않게)
+//   성공하면    : _kSentLockDuration 동안 "보냈어요"(체크)로 잠갔다가 다시 연다
+//   실패하면    : 바로 다시 누를 수 있다
+// 결과는 화면 아래 SnackBar(잠깐 뜨는 알림)로 알린다.
+// ─────────────────────────────────────────────
+
+/// 성공한 뒤 버튼을 "보냈어요"로 잠가 두는 시간
+const Duration _kSentLockDuration = Duration(seconds: 3);
+
+/// 서버에 아예 닿지 못했을 때(연결 실패·시간 초과)의 안내
+const String _kPrintNetworkMessage = '서버에 연결하지 못했어요. 서버가 켜져 있는지, 같은 네트워크에 있는지 확인해 주세요';
+
+/// 그 밖에 이유를 알 수 없는 실패 (카메라 화면과 같은 문구)
+const String _kPrintDefaultMessage = '오류가 발생했습니다. 다시 시도해 주세요';
+
+enum _PrintStatus { ready, sending, sent }
+
+class _PrintButton extends StatefulWidget {
+  const _PrintButton({
+    required this.enabled,
+    required this.mode,
+    required this.text,
+    required this.reason,
+    required this.braille,
+  });
+
+  /// false 면 출력할 데이터가 없어 처음부터 누를 수 없다
+  final bool enabled;
+  final String mode;
+  final String text;
+  final String? reason;
+  final dynamic braille;
+
+  @override
+  State<_PrintButton> createState() => _PrintButtonState();
+}
+
+class _PrintButtonState extends State<_PrintButton> {
+  _PrintStatus _status = _PrintStatus.ready;
+
+  /// "보냈어요" 잠금을 푸는 타이머. 화면을 떠나면 취소한다.
+  Timer? _unlockTimer;
+
+  @override
+  void dispose() {
+    _unlockTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    // 보내는 중이거나 보낸 직후에는 무시 (버튼도 잠겨 있지만 한 번 더 막는다)
+    if (_status != _PrintStatus.ready) return;
+    setState(() => _status = _PrintStatus.sending);
+
+    Map<String, dynamic> response;
+    try {
+      // braille 은 서버에서 받은 값 그대로 보낸다 (거울 변환은 서버가)
+      response = await ApiService.sendPrint(
+        mode: widget.mode,
+        text: widget.text,
+        reason: widget.reason,
+        braille: widget.braille as Object,
+      );
+    } catch (e) {
+      // ApiService 는 실패를 예외 대신 ok:false 로 돌려주므로 여기는 예상하지 못한 오류뿐이다
+      debugPrint('[ResultScreen] 출력 요청 중 예상하지 못한 오류: $e');
+      response = {'ok': false, 'error': 'unexpected'};
+    }
+    if (!mounted) return; // 기다리는 동안 화면을 떠났으면 끝
+
+    final ok = response['ok'] == true;
+    _showMessage(
+      ok ? _successMessage(response) : _failureMessage(response),
+      duration: Duration(seconds: ok ? 6 : 4),
+    );
+
+    if (!ok) {
+      setState(() => _status = _PrintStatus.ready); // 실패는 바로 다시 누를 수 있게
+      return;
+    }
+    setState(() => _status = _PrintStatus.sent);
+    _unlockTimer = Timer(_kSentLockDuration, () {
+      if (mounted) setState(() => _status = _PrintStatus.ready);
+    });
+  }
+
+  /// 성공 문구. 서버가 알려 준 기기(device)로 고르고, 없으면 mode 로 고른다.
+  String _successMessage(Map<String, dynamic> response) {
+    final device = response['device'];
+    final isBook = device == 'fw2' || (device == null && widget.mode == kModeBook);
+    final message = isBook
+        ? '책 타각기로 보냈어요'
+        : '라벨 출력기로 보냈어요. 기기에서 안내를 듣고 출력 버튼을 눌러 주세요';
+    final waiting = response['waiting'];
+    return waiting is int ? '$message (대기 중인 작업 $waiting개)' : message;
+  }
+
+  /// 실패 문구. 서버의 reason 을 그대로 보여 주고, 서버에 닿지 못했으면 따로 안내한다.
+  String _failureMessage(Map<String, dynamic> response) {
+    final error = response['error'];
+    final reason = response['reason'];
+    debugPrint('[ResultScreen] 출력 실패 error=$error reason=$reason');
+
+    // /print 는 network_error 를 내지 않으므로, 이 값은 앱이 만든 연결 실패·시간 초과다
+    if (error == 'network_error') return _kPrintNetworkMessage;
+    if (error != 'parse_failed' && reason is String && reason.trim().isNotEmpty) return reason;
+    return _kPrintDefaultMessage;
+  }
+
+  void _showMessage(String message, {required Duration duration}) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message), duration: duration));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget icon;
+    final String label;
+    switch (_status) {
+      case _PrintStatus.sending:
+        icon = const SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        );
+        label = '보내는 중…';
+      case _PrintStatus.sent:
+        icon = const Icon(Icons.check);
+        label = '보냈어요';
+      case _PrintStatus.ready:
+        icon = const Icon(Icons.print);
+        label = '출력하기';
+    }
+
+    final canPress = widget.enabled && _status == _PrintStatus.ready;
+    return FilledButton.icon(
+      // onPressed 가 null 이면 회색으로 눌리지 않는다
+      onPressed: canPress ? _send : null,
+      icon: icon,
+      label: Text(label, style: const TextStyle(fontSize: 16)),
     );
   }
 }

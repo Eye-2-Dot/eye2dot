@@ -269,4 +269,123 @@ void main() {
       expect(r, {'ok': false, 'error': 'network_error'});
     });
   });
+
+  group('출력 요청 (sendPrint)', () {
+    setUp(() {
+      ApiService.useMock = false;
+      ApiService.retryDelayUnit = Duration.zero;
+    });
+    tearDown(() {
+      ApiService.useMock = kUseMock;
+      ApiService.clientFactory = http.Client.new;
+      ApiService.retryDelayUnit = const Duration(seconds: 1);
+    });
+
+    test('라벨: /print 에 JSON 으로 보내고, braille 은 받은 값 그대로(거울 변환 없음)', () async {
+      final requests = useFakeServer((_) => jsonResponse(
+          {'ok': true, 'job_id': '7cabc156cc10', 'device': 'fw1', 'waiting': 1}));
+
+      final r = await ApiService.sendPrint(
+        mode: kModeLabel,
+        text: '사과',
+        reason: '빨간 껍질에 꼭지가 있습니다.',
+        braille: <int>[32, 35, 8, 39],
+      );
+
+      final req = requests.single;
+      expect(req.method, 'POST');
+      expect(req.url.toString(), '$kServerBaseUrl/print');
+      expect(req.headers['content-type'], startsWith('application/json'));
+      expect(jsonDecode(req.body), {
+        'mode': 'label',
+        'text': '사과',
+        'reason': '빨간 껍질에 꼭지가 있습니다.',
+        'braille': [32, 35, 8, 39], // 거울 값 [4, 28, 1, 60] 이 아니어야 한다
+      });
+
+      expect(r, {'ok': true, 'job_id': '7cabc156cc10', 'device': 'fw1', 'waiting': 1});
+      expect(r.containsKey('braille'), isFalse, reason: '없는 braille 키를 만들어 넣지 않는다');
+    });
+
+    test('책: 2차원 braille 을 줄 구조 그대로 보낸다', () async {
+      final requests = useFakeServer((_) => jsonResponse(
+          {'ok': true, 'job_id': 'c91e89fd6260', 'device': 'fw2', 'waiting': 2}));
+
+      final r = await ApiService.sendPrint(
+        mode: kModeBook,
+        text: '점자 시험',
+        reason: 'OCR로 텍스트를 인식했습니다.',
+        braille: <List<int>>[
+          [1, 2, 0, 8],
+          [63, 0, 36],
+        ],
+      );
+
+      expect(jsonDecode(requests.single.body)['braille'], [
+        [1, 2, 0, 8],
+        [63, 0, 36],
+      ]);
+      expect(r['device'], 'fw2');
+      expect(r['waiting'], 2);
+    });
+
+    test('reason 이 없으면 빈 문자열로 보낸다', () async {
+      final requests = useFakeServer((_) => jsonResponse(
+          {'ok': true, 'job_id': 'x', 'device': 'fw1', 'waiting': 1}));
+
+      await ApiService.sendPrint(mode: kModeLabel, text: '우유', braille: <int>[13, 41]);
+
+      expect(jsonDecode(requests.single.body)['reason'], '');
+    });
+
+    test('서버의 400 실패(invalid_braille)는 reason 까지 그대로, 재시도 없이', () async {
+      const body = {
+        'ok': false,
+        'error': 'invalid_braille',
+        'reason': '칸 값은 0~63 정수여야 합니다 (받은 값: 64).',
+      };
+      final requests = useFakeServer((_) => jsonResponse(body, 400));
+
+      final r = await ApiService.sendPrint(mode: kModeLabel, text: 'x', braille: <int>[64]);
+
+      expect(r, body);
+      expect(requests, hasLength(1));
+    });
+
+    test('연결 실패는 재시도하지 않고(1번만) network_error — 작업이 두 번 들어가지 않게', () async {
+      final requests = useFakeServer((_) => throw http.ClientException('연결 거부'));
+
+      final r = await ApiService.sendPrint(mode: kModeLabel, text: '우유', braille: <int>[13, 41]);
+
+      expect(requests, hasLength(1));
+      expect(r, {'ok': false, 'error': 'network_error'});
+    });
+
+    test('시간 초과는 network_error', () async {
+      final requests = useFakeServer((_) => throw TimeoutException('시간 초과'));
+
+      final r = await ApiService.sendPrint(mode: kModeLabel, text: '우유', braille: <int>[13, 41]);
+
+      expect(requests, hasLength(1));
+      expect(r, {'ok': false, 'error': 'network_error'});
+    });
+
+    test('더미 모드는 서버에 보내지 않고 가짜 성공을 준다 (기기는 모드로 정함)', () async {
+      ApiService.useMock = true;
+      final requests = useFakeServer((_) => jsonResponse({'ok': false, 'error': 'should_not_call'}));
+
+      final label = await ApiService.sendPrint(mode: kModeLabel, text: '우유', braille: <int>[13, 41]);
+      final book = await ApiService.sendPrint(
+        mode: kModeBook,
+        text: '책',
+        braille: <List<int>>[
+          [1],
+        ],
+      );
+
+      expect(requests, isEmpty);
+      expect(label, {'ok': true, 'job_id': 'mock', 'device': 'fw1', 'waiting': 1});
+      expect(book['device'], 'fw2');
+    });
+  });
 }

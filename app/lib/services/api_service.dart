@@ -12,6 +12,9 @@ const Duration _kImageTimeout = Duration(seconds: 30);
 /// 텍스트 점역은 AI를 부르지 않아 빠르다.
 const Duration _kTextTimeout = Duration(seconds: 10);
 
+/// 출력 요청은 서버가 대기열에 넣기만 하므로 빠르다 (음성은 서버가 뒤에서 만든다).
+const Duration _kPrintTimeout = Duration(seconds: 10);
+
 /// 네트워크 오류 시 재시도 횟수. 첫 시도 1번 + 재시도 최대 3번 = 최대 4번 보낸다.
 const int _kMaxRetries = 3;
 
@@ -155,6 +158,61 @@ class ApiService {
     );
   }
 
+  /// 출력 요청 — 결과 화면의 '출력하기'. 서버 대기열에 작업을 넣는다.
+  ///
+  /// [mode]    kModeLabel(→ 라벨 출력기 fw1) 또는 kModeBook(→ 책 타각기 fw2)
+  /// [text]    인식된 텍스트
+  /// [reason]  판단 근거. 펌웨어 1이 음성으로 읽어 준다 (없으면 빈 문자열로 보낸다)
+  /// [braille] 서버에서 받은 점자 배열 **그대로** (라벨 `List<int>` / 책 `List<List<int>>`).
+  ///           앱에서 거울 모양으로 바꾸지 말 것. 서버가 기기에 내줄 때 바꾼다 (server/mirror.py).
+  ///
+  /// 성공: {"ok": true, "job_id": "7cabc156cc10", "device": "fw1", "waiting": 1}
+  ///       device  = 작업이 간 기기 (fw1 라벨 출력기 / fw2 책 타각기)
+  ///       waiting = 그 기기에서 기다리는 작업 수 (방금 넣은 것 포함)
+  /// 실패: {"ok": false, "error": ..., "reason": ...}
+  ///       서버: invalid_mode / missing_braille / invalid_braille (HTTP 400)
+  ///       앱이 만드는 실패(reason 없음): network_error(연결 실패·시간 초과), parse_failed
+  ///
+  /// 연결 실패여도 **재시도하지 않는다.** 요청이 서버에 닿은 뒤 연결이 끊긴 경우에 다시 보내면
+  /// 같은 작업이 대기열에 두 번 들어가 두 번 출력되기 때문이다. 실패하면 사용자가 다시 누른다.
+  ///
+  /// 보낼 곳: POST {kServerBaseUrl}/print
+  ///         JSON {"mode", "text", "reason", "braille"}   (docs/POLLING_API.md 1장)
+  ///
+  /// kUseMock 이 true 면 서버에 보내지 않고 1초 뒤 가짜 성공을 돌려준다.
+  static Future<Map<String, dynamic>> sendPrint({
+    required String mode,
+    required String text,
+    String? reason,
+    required Object braille,
+  }) async {
+    if (useMock) {
+      await Future.delayed(const Duration(seconds: 1));
+      return {
+        'ok': true,
+        'job_id': 'mock',
+        'device': mode == kModeBook ? 'fw2' : 'fw1',
+        'waiting': 1,
+      };
+    }
+
+    final uri = Uri.parse('$kServerBaseUrl/print');
+    final body = jsonEncode({
+      'mode': mode,
+      'text': text,
+      'reason': reason ?? '',
+      'braille': braille,
+    });
+
+    return _send(
+      timeout: _kPrintTimeout,
+      maxRetries: 0, // 재시도하면 작업이 두 번 들어갈 수 있다 (위 설명)
+      buildRequest: () => http.Request('POST', uri)
+        ..headers['Content-Type'] = 'application/json'
+        ..body = body,
+    );
+  }
+
   /// 서버 응답을 기다리는 느낌을 내도록 1초 쉬었다가 더미 결과를 준다 (로딩 화면 확인용).
   static Future<Map<String, dynamic>> _mockResult(String mode) async {
     await Future.delayed(const Duration(seconds: 1));
@@ -165,9 +223,12 @@ class ApiService {
   ///
   /// 재시도함    : 연결 실패(서버 꺼짐, 와이파이 끊김), 서버의 network_error(Gemini 연결 실패)
   /// 재시도 안 함: 시간 초과, rate_limit, 그 밖에 서버가 답을 준 모든 실패
+  ///
+  /// [maxRetries] 재시도 최대 횟수. 기본은 _kMaxRetries(3). 0 이면 한 번만 보낸다 (sendPrint).
   static Future<Map<String, dynamic>> _send({
     required http.BaseRequest Function() buildRequest,
     required Duration timeout,
+    int maxRetries = _kMaxRetries,
   }) async {
     for (var attempt = 0;; attempt++) {
       // 연결 실패는 순식간에 나므로 쉬지 않으면 재시도가 의미 없이 한꺼번에 끝난다
@@ -181,8 +242,8 @@ class ApiService {
             .timeout(timeout);
         final result = _parse(response);
 
-        if (result['error'] == 'network_error' && attempt < _kMaxRetries) {
-          debugPrint('[ApiService] 서버 network_error, 재시도 ${attempt + 1}/$_kMaxRetries: ${result['reason']}');
+        if (result['error'] == 'network_error' && attempt < maxRetries) {
+          debugPrint('[ApiService] 서버 network_error, 재시도 ${attempt + 1}/$maxRetries: ${result['reason']}');
           continue;
         }
         return result;
@@ -193,7 +254,7 @@ class ApiService {
         return _failure('network_error');
       } on http.ClientException catch (e) {
         debugPrint('[ApiService] 연결 실패 (${attempt + 1}번째 시도): $e');
-        if (attempt < _kMaxRetries) continue;
+        if (attempt < maxRetries) continue;
         return _failure('network_error');
       } finally {
         // 연결을 닫아야 Chrome 에서 시간 초과된 요청도 실제로 취소된다
@@ -220,7 +281,8 @@ class ApiService {
       return _failure('parse_failed');
     }
 
-    if (decoded['ok'] == true) {
+    // braille 이 있는 응답(sendImage·sendText)만 다듬는다. /print 응답에는 braille 이 없다
+    if (decoded['ok'] == true && decoded.containsKey('braille')) {
       decoded['braille'] = _normalizeBraille(decoded['braille']);
     }
     return decoded;
