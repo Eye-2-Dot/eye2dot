@@ -97,7 +97,7 @@ ESP32 출력 끝   ──POST /jobs/{id}/done──▶  완료 기록
   책 한 쪽 타각은 몇 분 걸릴 수 있어서, 시간이 지났다고 다시 주면 같은 쪽이 두 번 찍힌다.
   필요하면 나중에 "다시 출력" 기능을 앱에 따로 둔다.
 - 대기열은 메모리에만 둔다. 서버를 재시작하면 비워진다. 전시용으로는 충분하다.
-- 기기 촬영 버튼 → 촬영 경로(`/process`, `/process-file`)는 바뀌지 않는다.
+- 기기 촬영 버튼 → 촬영 경로(`/process-file`. ESP32 의 `USE_MOCK` 이 true 면 `/process-mock`)는 폴링과 상관없다.
   ESP32 가 먼저 묻고 바로 답을 받으므로 폴링이 필요 없다.
 - ESP32 는 **할 일이 없을 때만** 폴링한다. 촬영해서 서버에 보내는 동안(최대 85초)과
   작업을 ATmega 로 보내 답을 기다리는 동안(최대 2분)에는 폴링하지 않는다.
@@ -135,20 +135,11 @@ ESP32 출력 끝   ──POST /jobs/{id}/done──▶  완료 기록
 두 주소 모두 같은 형식이다. `GET /speech?text=` 는 실제 서버(`server/main.py`)에 이미 있고,
 `GET /speech/{speech_id}` 는 아직 없다 (서버 담당이 만들 자리 — 시험 서버에는 있음).
 
-```
-HTTP/1.1 200 OK
-content-type: application/octet-stream
-content-length: 8000
-x-audio-duration: 1.000
+**음성 형식(8kHz·8비트·무음 128 등)과 헤더는 [`api-spec.md`](api-spec.md) 의 `GET /speech` 절이 기준이다.**
+`GET /speech/{speech_id}` 도 그 절의 "오디오 형식"·"성공 응답"·"실패 응답"을 그대로 따른다.
 
-<raw PCM 8000바이트>
-```
-
-| 항목 | 값 |
-|---|---|
-| 형식 | 8000 Hz, 8비트 unsigned, 모노, 헤더 없음, 무음 = 128 |
-| 크기 | 1초 = 8000바이트. ESP32 는 `Content-Length` 만큼 받는다 |
-| 실패 | 200 이 아니면 본문은 JSON 오류다 → 재생하지 않고 음성 없이 진행 |
+- ESP32 는 `Content-Length` 만큼 받는다.
+- 200 이 아니면 본문은 JSON 오류다 → 재생하지 않고 음성 없이 진행.
 
 시험 서버는 내용과 상관없이 1초짜리 440Hz 사인파를 돌려준다. 없는 `speech_id` 면 404 `unknown_speech`.
 
