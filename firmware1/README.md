@@ -202,6 +202,18 @@ Mega D18 ──[ 1kΩ ]──┬──▶ ESP32 GPIO14
 
 ## 시험 방법
 
+### 0. 부품 하나씩 — `firmware1/tests/`
+
+완성 펌웨어를 올리기 전에 부품을 하나씩 확인하는 작은 PlatformIO 프로젝트들이다. 폴더마다 `README.md` 에
+연결할 것, 올리는 명령(`cd firmware1/tests/<이름>` → `pio run -t upload` → `pio device monitor`), 입력할 것,
+성공이면 보이는 것이 있다. 핀은 모두 `mega/include/pins.h` 를 그대로 쓰고, mega 시험은 켜자마자 솔레노이드 핀(D22~D27)을 LOW 로 잡는다.
+**이 순서로** 한다: ① `button_test`·`sensor_test` (배터리 없이 USB 만, 위험 없음) →
+② `link_test`(Mega) + `cam_link_test`(ESP32-CAM) 로 두 보드 사이 선과 분압 확인 →
+③ `solenoid_test` (배터리 연결, `1` 한 번 → `y` → `63`, 10초에 40번까지) →
+④ `stepper_test` (카드 이송 모터, pins.h: `PIN_TAPE_*`. 기구를 풀어 둔 채 `s` → `f`, 그다음 `m100` 으로 `STEPS_PER_MM` 실측) →
+⑤ 완성 펌웨어로 아래 1~4. 스피커는 따로 시험 프로그램 없이 완성 mega 펌웨어의 `0`~`5` 명령으로 한다.
+업로드할 때는 항상 배터리를 빼고 USB 만 꽂는다.
+
 ### 1. ATmega 혼자 — USB 명령으로 소리 시험, 버튼 확인
 
 `mega` 를 올리고 시리얼 모니터(115200)에서 한 글자를 보낸다.
