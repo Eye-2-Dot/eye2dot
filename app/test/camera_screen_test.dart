@@ -41,6 +41,7 @@ Future<void> submitText(WidgetTester tester, String text) async {
   await tester.tap(find.text('라벨 문구 직접 입력하기'));
   await tester.pumpAndSettle();
   await tester.enterText(find.byType(TextField), text);
+  await tester.pump(); // 글자 수를 다시 세어 확인 버튼이 켜지도록 화면을 한 번 다시 그린다
   await tester.tap(find.text('확인'));
 }
 
@@ -87,18 +88,19 @@ void main() {
     expect(result.cellCount, 2);
   });
 
-  testWidgets('서버 reason 이 있으면 그대로 보여 주고, "다시 입력하기"는 이전 글자를 채워 연다',
+  testWidgets('서버의 label_too_long 은 reason 을 그대로 보여 주고, "다시 입력하기"는 이전 글자를 채워 연다',
       (tester) async {
+    // 4글자라 앱에서는 통과하지만, 받침·이중모음이 많아 점자가 20칸 → 서버가 칸 수로 거절
     useFakeServer((_) => jsonResponse({
           'ok': false,
-          'error': 'text_too_long',
-          'reason': '라벨 문구는 50자 이하여야 합니다 (입력: 73자)',
+          'error': 'label_too_long',
+          'reason': '이름이 길어 라벨 카드에 담을 수 없습니다.',
         }, 400));
 
-    await submitText(tester, '아주긴문구');
+    await submitText(tester, '뷁뷁뷁뷁');
     await tester.pumpAndSettle();
 
-    expect(find.text('라벨 문구는 50자 이하여야 합니다 (입력: 73자)'), findsOneWidget);
+    expect(find.text('이름이 길어 라벨 카드에 담을 수 없습니다.'), findsOneWidget);
     expect(find.text('다시 시도'), findsOneWidget);
     expect(find.text('다시 입력하기'), findsOneWidget);
     expect(find.text('새 사진 고르기'), findsNothing);
@@ -107,7 +109,55 @@ void main() {
     await tester.pumpAndSettle();
 
     final field = tester.widget<TextField>(find.byType(TextField));
-    expect(field.controller!.text, '아주긴문구');
+    expect(field.controller!.text, '뷁뷁뷁뷁');
+  });
+
+  testWidgets('직접 입력: 공백을 뺀 6글자면 안내가 뜨고 확인이 꺼져 서버에 보내지 않는다', (tester) async {
+    final requests = useFakeServer((_) => jsonResponse({'ok': false, 'error': 'should_not_call'}));
+
+    await tester.pumpWidget(const MaterialApp(home: CameraScreen(mode: kModeLabel)));
+    await tester.tap(find.text('라벨 문구 직접 입력하기'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '아이스크림콘');
+    await tester.pump();
+
+    expect(find.text('6/5 (공백 제외)'), findsOneWidget);
+    expect(find.text('라벨 이름은 공백을 빼고 5글자까지입니다'), findsOneWidget);
+    final confirm = tester.widget<ElevatedButton>(find.widgetWithText(ElevatedButton, '확인'));
+    expect(confirm.onPressed, isNull);
+
+    await tester.tap(find.text('확인'));
+    await tester.pumpAndSettle();
+    expect(requests, isEmpty);
+    expect(find.byType(AlertDialog), findsOneWidget, reason: '창이 닫히지 않는다');
+
+    // 한 글자 지우면 다시 보낼 수 있다
+    await tester.enterText(find.byType(TextField), '아이스크림');
+    await tester.pump();
+    expect(find.text('5/5 (공백 제외)'), findsOneWidget);
+    expect(find.text('라벨 이름은 공백을 빼고 5글자까지입니다'), findsNothing);
+    expect(tester.widget<ElevatedButton>(find.widgetWithText(ElevatedButton, '확인')).onPressed,
+        isNotNull);
+  });
+
+  testWidgets('직접 입력: 공백은 세지 않는다 (띄어 쓴 5글자는 보낼 수 있다)', (tester) async {
+    final requests = useFakeServer((_) => jsonResponse(
+        {'ok': false, 'error': 'rate_limit', 'reason': '잠시 후 다시 시도하세요.'}, 429));
+
+    await submitText(tester, '우 유 샴 푸 치');
+    await tester.pumpAndSettle();
+
+    expect(requests, hasLength(1));
+    expect(jsonDecode(requests.single.body), {'text': '우 유 샴 푸 치', 'mode': 'label'});
+  });
+
+  testWidgets('label_too_long 에 reason 이 없으면 앱 문구를 보여 준다', (tester) async {
+    useFakeServer((_) => jsonResponse({'ok': false, 'error': 'label_too_long'}, 400));
+
+    await submitText(tester, '뷁뷁뷁뷁');
+    await tester.pumpAndSettle();
+
+    expect(find.text('이름이 길어 라벨 카드에 담을 수 없습니다'), findsOneWidget);
   });
 
   testWidgets('network_error 는 서버 reason 대신 고정 문구를 보여 준다', (tester) async {

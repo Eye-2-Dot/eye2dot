@@ -48,6 +48,27 @@ mirrored = ((m & 0b000111) << 3) | ((m >> 3) & 0b000111)
 - 거울 값이 들어 있는 응답에는 `"mirrored": true`가 붙는다 (아래 "기기용 응답", `docs/POLLING_API.md`의 `/jobs/next`).
 - 자체 시험: `cd server && python mirror.py`
 
+### 라벨 길이 제한 (펌웨어 1 라벨 카드)
+
+라벨 모드의 이름은 펌웨어 1 라벨 카드(가로 100mm × 세로 30mm)에 들어가는 만큼만 받는다. **책 모드에는 쓰지 않는다.**
+
+```
+카드 가로 100mm − 양 끝 여백 5mm × 2 = 90mm
+90mm ÷ 칸 간격 6mm = 15칸   → 점자 최대 15칸 (빈칸 포함)
+이름은 공백을 빼고 5글자   → 숫자·영어도 한 글자씩 센다 (예: "우 유" = 2글자, "iPhone" = 6글자)
+```
+
+- 한글 한 글자는 받침·된소리·이중모음에 따라 1~5칸이라 5글자여도 15칸을 넘을 수 있다. **카드에 들어가는지는 칸 수로 최종 확인한다.**
+- 넘으면 `label_too_long` (reason: `"이름이 길어 라벨 카드에 담을 수 없습니다."`).
+
+| 어디서 | 무엇을 보나 | HTTP |
+|---|---|---|
+| `/process`, `/process-file`, `/process-mock` 라벨 (Gemini 인식 결과) | 공백 빼고 5글자, 15칸 | **200** (`recognition_failed` 처럼 인식 결과라서). Gemini 를 다시 부르지 않는다 |
+| `/translate` 라벨 (앱 직접 입력) | 공백 빼고 5글자, 15칸 | 400 |
+| `/print` 라벨 (`docs/POLLING_API.md`) | 15칸 (글자 수는 보지 않음) | 400 |
+
+Gemini 에게도 "공백을 빼고 5글자 이내의 짧고 흔한 이름(예: 우유, 사과, 샴푸, 치약)"을 달라고 요청한다 (`server/main.py` 의 `recognize_object`).
+
 ### CORS
 
 개발 단계라 모든 출처를 허용한다 (`allow_origins=["*"]`). 외부 배포 시 특정 도메인만 허용할 것.
@@ -131,7 +152,7 @@ Content-Type: application/json
 
 | 필드 | 필수 | 설명 |
 |---|---|---|
-| `text` | **예** | 점역할 글. 앞뒤 공백만 뗀다 (책 본문 중간의 `\n`은 줄 나누기에 쓰이므로 그대로 둔다). **라벨 50자 / 책 2000자 이하** |
+| `text` | **예** | 점역할 글. 앞뒤 공백만 뗀다 (책 본문 중간의 `\n`은 줄 나누기에 쓰이므로 그대로 둔다). **라벨: 공백 빼고 5글자·점자 15칸 이하 (위 "라벨 길이 제한") / 책: 2000자 이하** |
 | `mode` | 아니오 (기본 `label`) | `label` 또는 `book` |
 
 성공 응답은 아래 "성공 응답"과 같은 형식이고, `text`는 입력한 글, `reason`은 항상 `"직접 입력한 문구입니다."` 다.
@@ -142,7 +163,8 @@ Content-Type: application/json
 |---|---|
 | `invalid_mode` | `mode`가 `label`/`book`이 아님 |
 | `missing_text` | `text`가 없거나 공백뿐, 또는 점자로 바꿀 글자가 없음 (문장부호만 있는 경우 등) |
-| `text_too_long` | 라벨 50자 / 책 2000자 초과 |
+| `label_too_long` | 라벨이 공백 빼고 5글자 또는 점자 15칸 초과 (라벨 카드에 안 들어감) |
+| `text_too_long` | 책 2000자 초과 |
 
 ---
 
@@ -223,6 +245,7 @@ Content-Type: application/json
 | `invalid_mode` | 400 | `mode`가 `label`/`book`이 아님 |
 | `invalid_image` | 400 | 이미지로 열 수 없는 데이터 |
 | `recognition_failed` | 200 | 사물·텍스트를 찾지 못함 |
+| `label_too_long` | 200 | 라벨 모드에서 인식한 이름이 공백 빼고 5글자 또는 점자 15칸 초과 (위 "라벨 길이 제한") |
 | `rate_limit` | 429 | Gemini 요청 한도 초과 |
 | `network_error` | 502 | Gemini 서버 연결 실패 |
 | `parse_failed` | 500 | Gemini 응답 해석 실패 |
@@ -235,7 +258,7 @@ Content-Type: application/json
 }
 ```
 
-`recognition_failed`만 HTTP 200으로 나간다. 따라서 앱은 **상태 코드가 아니라 `ok` 필드로 성공 여부를 판단해야 한다.**
+`recognition_failed`와 `label_too_long`만 HTTP 200으로 나간다. 따라서 앱은 **상태 코드가 아니라 `ok` 필드로 성공 여부를 판단해야 한다.**
 
 ---
 
@@ -268,7 +291,7 @@ Content-Type: application/json
 
 | 실패 `error` | 안내 문장 | reason이 비었을 때 |
 |---|---|---|
-| `recognition_failed`, `invalid_image` | ` 다시 찍어 주세요.` (사진을 다시 찍으면 나아질 수 있음) | `인식하지 못했습니다.` |
+| `recognition_failed`, `invalid_image`, `label_too_long` | ` 다시 찍어 주세요.` (사진을 다시 찍으면 나아질 수 있음) | `인식하지 못했습니다.` |
 | `rate_limit`, `network_error`, `parse_failed`, 그 밖의 서버 오류 | ` 잠시 후 다시 눌러 주세요.` (서버·AI 쪽 문제) | `서버에서 문제가 생겼습니다.` |
 | `invalid_mode`, `invalid_device` | 음성 없음 (기기 설정 오류라 다시 해도 같다) | — |
 | (위 모든 경우) reason에 이미 **"다시"** 가 들어 있음 | **붙이지 않는다** (겹침 방지. 예: `rate_limit`의 "…잠시 후 다시 시도하세요.") | — |

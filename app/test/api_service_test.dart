@@ -176,8 +176,8 @@ void main() {
     test('400 실패 응답은 reason 까지 그대로 돌려준다', () async {
       const body = {
         'ok': false,
-        'error': 'text_too_long',
-        'reason': '라벨 문구는 50자 이하여야 합니다 (입력: 73자)',
+        'error': 'label_too_long',
+        'reason': '이름이 길어 라벨 카드에 담을 수 없습니다.',
       };
       final requests = useFakeServer((_) => jsonResponse(body, 400));
 

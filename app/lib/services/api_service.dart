@@ -87,13 +87,13 @@ class ApiService {
   /// {
   ///   "ok": false,
   ///   "error": "recognition_failed",   // invalid_mode / invalid_image /
-  ///                                    // recognition_failed / rate_limit /
-  ///                                    // network_error / parse_failed
+  ///                                    // recognition_failed / label_too_long /
+  ///                                    // rate_limit / network_error / parse_failed
   ///   "reason": "사용자에게 보여줄 실패 이유"
   /// }
   ///
-  /// recognition_failed 는 HTTP 200으로 내려온다.
-  /// 따라서 상태 코드가 아니라 ok 필드로 성공 여부를 판단할 것.
+  /// recognition_failed 와 label_too_long(라벨 이름이 카드보다 김: 공백 빼고 5글자·점자 15칸 초과)은
+  /// HTTP 200으로 내려온다. 따라서 상태 코드가 아니라 ok 필드로 성공 여부를 판단할 것.
   ///
   /// 앱이 직접 만드는 실패 응답에는 reason 이 없다. 화면이 error 코드로 문구를 고른다.
   ///   network_error : 연결 실패(재시도 후에도) 또는 시간 초과
@@ -170,7 +170,8 @@ class ApiService {
   ///       device  = 작업이 간 기기 (fw1 라벨 출력기 / fw2 책 타각기)
   ///       waiting = 그 기기에서 기다리는 작업 수 (방금 넣은 것 포함)
   /// 실패: {"ok": false, "error": ..., "reason": ...}
-  ///       서버: invalid_mode / missing_braille / invalid_braille (HTTP 400)
+  ///       서버: invalid_mode / missing_braille / invalid_braille /
+  ///             label_too_long(라벨 점자 15칸 초과) (HTTP 400)
   ///       앱이 만드는 실패(reason 없음): network_error(연결 실패·시간 초과), parse_failed
   ///
   /// 연결 실패여도 **재시도하지 않는다.** 요청이 서버에 닿은 뒤 연결이 끊긴 경우에 다시 보내면

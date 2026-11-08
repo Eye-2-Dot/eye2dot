@@ -235,6 +235,7 @@ void main() {
     await tester.tap(find.text('라벨 문구 직접 입력하기'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), '우유');
+    await tester.pump(); // 글자 수를 다시 세어 확인 버튼이 켜지도록 화면을 한 번 다시 그린다
     await tester.tap(find.text('확인'));
     await tester.pumpAndSettle();
     expect(find.byType(ResultScreen), findsOneWidget);

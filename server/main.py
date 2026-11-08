@@ -73,6 +73,45 @@ MODE_DEVICES = {mode: device for device, mode in DEVICE_MODES.items()}
 # 음성 안내가 있는 기기. 펌웨어 1 전용이라 fw2 에는 speech_id 를 붙이지 않는다
 SPEECH_DEVICES = {"fw1"}
 
+# ─────────────────────────────────────────────
+# 라벨 길이 제한 — 펌웨어 1 라벨 카드에 들어가는 만큼 (책 모드에는 쓰지 않는다)
+#
+#   카드 가로 100mm − 양 끝 여백 5mm × 2 = 90mm
+#   90mm ÷ 칸 간격 6mm = 15칸                       → LABEL_MAX_CELLS
+#   이름은 공백을 빼고 5글자 (숫자·영어도 한 글자씩) → LABEL_MAX_CHARS
+#
+# 한글 한 글자는 받침·된소리·이중모음에 따라 1~5칸이라, 5글자여도 15칸을 넘을 수 있다.
+# 그래서 카드에 들어가는지는 칸 수로 최종 확인한다. 칸 수에는 빈칸(공백)도 들어간다 (카드 위 자리를 차지하므로).
+# 넘으면 label_too_long. Gemini 를 다시 불러 짧은 이름을 받아 오지는 않는다.
+# ─────────────────────────────────────────────
+LABEL_MAX_CHARS = 5
+LABEL_MAX_CELLS = 15
+LABEL_TOO_LONG_REASON = "이름이 길어 라벨 카드에 담을 수 없습니다."
+
+
+def _label_char_count(text: str) -> int:
+    """공백(띄어쓰기·줄바꿈 등)을 뺀 글자 수. 숫자·영어도 한 글자씩 센다."""
+    return sum(1 for ch in text if not ch.isspace())
+
+
+def _label_problem(text: Optional[str], cell_count: int) -> Optional[str]:
+    """라벨이 카드에 들어가지 않으면 그 이유(서버 로그용), 들어가면 None.
+
+    text 가 None 이면 글자 수는 보지 않고 칸 수만 본다 (/print).
+    """
+    if text is not None:
+        chars = _label_char_count(text)
+        if chars > LABEL_MAX_CHARS:
+            return f"공백 빼고 {chars}글자 (최대 {LABEL_MAX_CHARS}글자)"
+    if cell_count > LABEL_MAX_CELLS:
+        return f"{cell_count}칸 (최대 {LABEL_MAX_CELLS}칸)"
+    return None
+
+
+def _label_too_long_payload() -> dict:
+    """label_too_long 실패 응답. 사용자에게 보일 reason 은 하나로 두고, 자세한 이유는 로그에만 남긴다."""
+    return {"ok": False, "error": "label_too_long", "reason": LABEL_TOO_LONG_REASON}
+
 
 def _invalid_mode_payload(mode: str) -> dict:
     return {
@@ -177,7 +216,8 @@ def recognize_object(image_bytes: bytes) -> dict:
 {"name": "사물이름", "reason": "판단근거"}
 
 규칙:
-- name: 한국어 명사 1개. 최대 6글자. 점자 라벨에 쓸 짧은 이름.
+- name: 공백을 빼고 5글자 이내의 짧고 흔한 한국어 이름 1개 (예: 우유, 사과, 샴푸, 치약).
+  가로 100mm 점자 라벨 카드에 들어가야 하므로 상표·용량·수식어는 빼세요.
 - reason: 왜 그렇게 판단했는지 한국어 1문장. 30자 이내.
 - 사물을 식별할 수 없으면 name을 빈 문자열로 두세요."""
 
@@ -400,6 +440,14 @@ def _process(image_bytes: bytes, mode: str) -> tuple[dict, int]:
                 "reason": result["reason"],
             }, 200
 
+        # 라벨 이름이 카드에 들어가지 않으면 실패. 인식은 했지만 쓸 수 없는 "결과"라
+        # recognition_failed 처럼 HTTP 200 으로 낸다 (앱·기기는 ok 로 판단한다)
+        if mode == "label":
+            problem = _label_problem(text, len(text_to_braille(text)))
+            if problem:
+                print(f"[라벨 너무 김] {text} / {problem}")
+                return _label_too_long_payload(), 200
+
         payload = {
             "ok": True,
             "text": text,                          # 앱은 화면 표시, 펌웨어 1은 음성 안내에 사용
@@ -448,7 +496,8 @@ RETAKE_GUIDE = "다시 찍어 주세요."          # 사진을 다시 찍으면 
 RETRY_GUIDE = "잠시 후 다시 눌러 주세요."   # 서버·AI 쪽 문제
 # RETAKE_GUIDE 를 쓰는 error. 여기 없는 error(rate_limit, network_error, parse_failed,
 # 예기치 못한 서버 오류 등)는 모두 RETRY_GUIDE
-RETAKE_ERRORS = {"recognition_failed", "invalid_image"}
+#   label_too_long: 이름이 길어 카드에 안 들어감 → 다시 찍으면 짧은 이름이 나올 수 있다
+RETAKE_ERRORS = {"recognition_failed", "invalid_image", "label_too_long"}
 # 기기 설정이 잘못된 요청. 다시 찍거나 눌러도 결과가 같으므로 음성을 만들지 않는다
 CONFIG_ERRORS = {"invalid_mode", "invalid_device"}
 # reason 에 이 말이 이미 있으면 안내 문장을 붙이지 않는다 (겹침 방지).
@@ -652,9 +701,8 @@ def speech_by_id(speech_id: str):
 # 앱과 펌웨어는 사진으로 만든 결과와 똑같이 다루면 된다.
 # ─────────────────────────────────────────────
 
-# 모드별 입력 글자 수 상한. 두 모드는 다루는 글의 길이가 전혀 달라 따로 둔다.
-# 라벨: 사물 이름은 보통 6자 내외다. 점자 라벨 한 장에 들어갈 현실적인 상한으로 50자를 둔다.
-MAX_TRANSLATE_TEXT_LABEL = 50
+# 입력 길이 상한. 두 모드는 다루는 글의 길이가 전혀 달라 따로 둔다.
+# 라벨: 위의 LABEL_MAX_CHARS(공백 빼고 5글자)·LABEL_MAX_CELLS(15칸) — 라벨 카드에 들어가는 만큼.
 # 책: A4 한 장 분량을 고려한 값. 서버 예시 본문(MOCK_BOOK_TEXT, 244자)도 넉넉히 들어간다.
 MAX_TRANSLATE_TEXT_BOOK = 2000
 
@@ -678,9 +726,10 @@ def translate(body: TranslateRequest):
             Body: {"text": "우유", "mode": "label"}   (mode 생략 시 "label")
 
     error 종류:
-        invalid_mode  : mode가 label/book이 아님
-        missing_text  : text가 비었거나 공백뿐이거나, 점자로 바꿀 글자가 없음(문장부호만 등)
-        text_too_long : 모드별 상한(라벨 50자 / 책 2000자) 초과
+        invalid_mode   : mode가 label/book이 아님
+        missing_text   : text가 비었거나 공백뿐이거나, 점자로 바꿀 글자가 없음(문장부호만 등)
+        label_too_long : 라벨이 공백 빼고 5글자 또는 점자 15칸을 넘음 (라벨 카드에 안 들어감)
+        text_too_long  : 책 본문이 2000자를 넘음
     """
     mode = body.mode or "label"
     if mode not in VALID_MODES:
@@ -695,19 +744,21 @@ def translate(body: TranslateRequest):
         )
 
     if mode == "book":
-        limit, subject = MAX_TRANSLATE_TEXT_BOOK, "책 본문은"
+        if len(text) > MAX_TRANSLATE_TEXT_BOOK:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "text_too_long",
+                    "reason": f"책 본문은 {MAX_TRANSLATE_TEXT_BOOK}자 이하여야 합니다 (입력: {len(text)}자)",
+                },
+                status_code=400,
+            )
     else:
-        limit, subject = MAX_TRANSLATE_TEXT_LABEL, "라벨 문구는"
-
-    if len(text) > limit:
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": "text_too_long",
-                "reason": f"{subject} {limit}자 이하여야 합니다 (입력: {len(text)}자)",
-            },
-            status_code=400,
-        )
+        # 라벨: 공백 빼고 5글자, 점자 15칸까지 (라벨 카드에 들어가는 만큼)
+        problem = _label_problem(text, len(text_to_braille(text)))
+        if problem:
+            print(f"[점역] 라벨 너무 김: {text} / {problem}")
+            return JSONResponse(_label_too_long_payload(), status_code=400)
 
     # 문장부호는 braille.py가 건너뛰므로 "!!! ..." 같은 입력은 빈 칸(0)만 남는다.
     # 점이 하나도 찍히지 않는 결과를 ok로 내보내면 펌웨어가 빈 라벨을 찍으려다 멈추므로 여기서 막는다.
@@ -801,6 +852,7 @@ def print_job(body: PrintRequest):
         invalid_mode    : mode 가 label/book 이 아님
         missing_braille : braille 이 없거나 빈 배열
         invalid_braille : 모양이 틀림(라벨 1차원 / 책 2차원) 또는 칸 값이 0~63 정수가 아님
+        label_too_long  : 라벨 점자가 15칸을 넘음 (라벨 카드에 안 들어감. 글자 수는 보지 않는다)
     """
     mode = body.mode or "label"
     if mode not in VALID_MODES:
@@ -814,6 +866,13 @@ def print_job(body: PrintRequest):
     problem = _braille_problem(body.braille, mode)
     if problem:
         return JSONResponse({"ok": False, "error": "invalid_braille", "reason": problem}, status_code=400)
+
+    # 라벨은 카드에 들어가는 15칸까지 (앱은 서버가 통과시킨 결과만 보내므로 칸 수만 본다)
+    if mode == "label":
+        too_long = _label_problem(None, len(body.braille))
+        if too_long:
+            print(f"[대기열] 라벨 너무 김: {too_long}")
+            return JSONResponse(_label_too_long_payload(), status_code=400)
 
     device = MODE_DEVICES[mode]
     job = {"mode": mode, "text": body.text or "", "reason": body.reason or "", "braille": body.braille}

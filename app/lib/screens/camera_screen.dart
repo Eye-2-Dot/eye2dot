@@ -14,8 +14,17 @@ const Map<String, String> _kErrorMessages = {
   'parse_failed': '오류가 발생했습니다. 다시 시도해 주세요',
   'missing_text': '입력한 내용이 없습니다',
   'text_too_long': '너무 깁니다. 더 짧게 입력해 주세요',
+  'label_too_long': '이름이 길어 라벨 카드에 담을 수 없습니다',
   'invalid_mode': '잘못된 요청입니다',
 };
+
+/// 라벨 이름의 최대 글자 수 (공백 제외). 서버(server/main.py)의 LABEL_MAX_CHARS 와 같은 값.
+/// 라벨 카드(가로 100mm, 최대 15칸)에 실제로 들어가는지는 서버가 점자 칸 수로 최종 확인한다.
+const int _kLabelMaxChars = 5;
+
+/// 공백(띄어쓰기·줄바꿈)을 뺀 글자 수. 숫자·영어도 한 글자씩 센다 (서버와 같은 기준).
+int _labelCharCount(String text) =>
+    text.runes.where((r) => String.fromCharCode(r).trim().isNotEmpty).length;
 
 /// 위 표에 없는 오류 코드일 때의 문구
 const String _kDefaultErrorMessage = '오류가 발생했습니다. 다시 시도해 주세요';
@@ -97,31 +106,40 @@ class _CameraScreenState extends State<CameraScreen> {
 
     final enteredText = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('점자 라벨 문구 직접 입력'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: '출력할 단어를 입력하세요 (예: 우유, 샴푸)',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('취소'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final text = controller.text.trim();
-              if (text.isNotEmpty) {
-                Navigator.pop(context, text);
-              }
-            },
-            child: const Text('확인'),
-          ),
-        ],
+      // 글자를 칠 때마다 공백을 뺀 글자 수를 다시 세어 안내와 확인 버튼을 바꾼다.
+      // 넘는 글자를 막지는 않는다 (막으면 한글을 조합하는 도중에 글자가 깨질 수 있어서).
+      builder: (context) => ValueListenableBuilder<TextEditingValue>(
+        valueListenable: controller,
+        builder: (context, value, _) {
+          final count = _labelCharCount(value.text);
+          final tooLong = count > _kLabelMaxChars;
+          final canSubmit = count > 0 && !tooLong;
+
+          return AlertDialog(
+            title: const Text('점자 라벨 문구 직접 입력'),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: InputDecoration(
+                hintText: '출력할 단어를 입력하세요 (예: 우유, 샴푸)',
+                border: const OutlineInputBorder(),
+                counterText: '$count/$_kLabelMaxChars (공백 제외)',
+                errorText: tooLong ? '라벨 이름은 공백을 빼고 $_kLabelMaxChars글자까지입니다' : null,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('취소'),
+              ),
+              ElevatedButton(
+                // 비었거나 5글자를 넘으면 꺼진다 (onPressed 가 null 이면 눌리지 않는다)
+                onPressed: canSubmit ? () => Navigator.pop(context, controller.text.trim()) : null,
+                child: const Text('확인'),
+              ),
+            ],
+          );
+        },
       ),
     );
 
