@@ -39,11 +39,15 @@
 // 아래 값을 바꾸면 펌웨어의 같은 값도 맞출 것:
 //   PIN_SOL      ↔ firmware1/mega/include/pins.h 의 PIN_SOL
 //   PULSE_MS     ↔ firmware1/mega/include/solenoid.h 의 SOL_PULSE_MS
+//   STRIKES      ↔ firmware1/mega/include/solenoid.h 의 SOL_STRIKES
+//   RESTRIKE_GAP_MS ↔ firmware1/mega/include/solenoid.h 의 SOL_RESTRIKE_GAP_MS
 //   COOLDOWN_MS  ↔ firmware1/mega/include/solenoid.h 의 SOL_COOLDOWN_MS
 const uint8_t  PIN_SOL[6]  = { 22, 23, 24, 25, 26, 27 };  // 솔레노이드 1~6번 (안내 출력용) — pins.h 와 맞출 것
 const uint8_t  SOL_MASK    = 0x3F;   // PORTA 0~5번 비트 = 0b00111111
 const uint16_t PULSE_MS    = 30;     // 켜 두는 시간. 5V 솔레노이드에 약 9V가 걸리므로 짧게! — solenoid.h 와 맞출 것
-const uint16_t COOLDOWN_MS = 200;    // 한 번 찍은 뒤 쉬는 시간 (코일 식히기 + 핀 복귀) — solenoid.h 와 맞출 것
+const uint8_t  STRIKES     = 2;      // 한 칸을 몇 번 누를지. 라벨지가 두꺼워서 2번 — solenoid.h 와 맞출 것
+const uint16_t RESTRIKE_GAP_MS = 60; // 같은 칸을 다시 누르기 전 쉬는 시간 (핀이 올라올 시간) — solenoid.h 와 맞출 것
+const uint16_t COOLDOWN_MS = 200;    // 한 칸을 다 찍은 뒤 쉬는 시간 (코일 식히기 + 핀 복귀) — solenoid.h 와 맞출 것
 
 // ─────────────────────────────────────────────
 // 솔레노이드 기본 동작
@@ -69,9 +73,12 @@ void punchMask(uint8_t mask) {
   mask &= SOL_MASK;                  // 6비트만 사용 (64 이상이 와도 안전)
   if (mask == 0) return;             // 0 = 빈칸 → 아무것도 안 찍음
 
-  PORTA = (PORTA & ~SOL_MASK) | mask;   // ① 켜기: 고른 점이 같은 순간에 켜짐
-  delay(PULSE_MS);                      // ② 찍는 시간
-  solenoidAllOff();                     // ③ 바로 끄기 (코일 보호)
+  for (uint8_t strike = 0; strike < STRIKES; strike++) {   // 같은 칸을 STRIKES 번
+    if (strike > 0) delay(RESTRIKE_GAP_MS);   // 핀이 올라올 시간
+    PORTA = (PORTA & ~SOL_MASK) | mask; // ① 켜기: 고른 점이 같은 순간에 켜짐
+    delay(PULSE_MS);                    // ② 찍는 시간
+    solenoidAllOff();                   // ③ 바로 끄기 (코일 보호)
+  }
   delay(COOLDOWN_MS);                   // ④ 쉬기
 }
 

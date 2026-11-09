@@ -26,11 +26,11 @@ pio device monitor
 
 | 입력 | 동작 |
 |---|---|
-| `0`~`63` + Enter | 그 비트의 솔레노이드를 **동시에** 1번 |
+| `0`~`63` + Enter | 그 비트의 솔레노이드를 **동시에** 한 칸 찍기 (`SOL_STRIKES` 번 누름) |
 | `y` + Enter | 1번 → 6번 하나씩 (0.4초 간격) |
 | `?` | 도움말 |
 
-- 켜는 시간·쉬는 시간은 완성 펌웨어와 같은 `mega/include/solenoid.h` 의 `SOL_PULSE_MS`(30ms)·`SOL_COOLDOWN_MS`(200ms) 다.
+- 켜는 시간·누르는 횟수·쉬는 시간은 완성 펌웨어와 같은 `mega/include/solenoid.h` 의 `SOL_PULSE_MS`(30ms)·`SOL_STRIKES`(2번, 사이 `SOL_RESTRIKE_GAP_MS` 60ms)·`SOL_COOLDOWN_MS`(200ms) 다. 라벨지가 두꺼워서 한 칸을 두 번 누른다.
 - **과열 방지**: 최근 10초 동안 40번을 넘게 찍으면 "과열 방지: … 초 뒤에 다시 하세요" 하고 찍지 않는다.
 
 ## 성공이면

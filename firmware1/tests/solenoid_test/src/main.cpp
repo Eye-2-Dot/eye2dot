@@ -10,7 +10,7 @@
  *     (1번 = 위에서 볼 때 왼쪽 위. 1·2·3 왼쪽 열, 4·5·6 오른쪽 열)
  *
  * 숫자는 솔레노이드 비트 그대로다 (서버가 기기에 주는 거울 값과 같은 규칙).
- * 켜는 시간·쉬는 시간은 완성 펌웨어와 같은 solenoid.h 의 SOL_PULSE_MS·SOL_COOLDOWN_MS.
+ * 켜는 시간·누르는 횟수·쉬는 시간은 완성 펌웨어와 같은 solenoid.h 의 SOL_PULSE_MS·SOL_STRIKES·SOL_RESTRIKE_GAP_MS·SOL_COOLDOWN_MS.
  * 과열 방지: 최근 BURST_WINDOW_MS 동안 BURST_MAX 번을 넘게 찍으면 거절한다.
  *
  * 시리얼 명령 (입력 뒤 Enter)
@@ -22,7 +22,7 @@
 #include <Arduino.h>
 
 #include "mega_test.h"
-#include "solenoid.h"   // SOL_PULSE_MS, SOL_COOLDOWN_MS (함수는 쓰지 않고 값만 쓴다)
+#include "solenoid.h"   // SOL_PULSE_MS, SOL_STRIKES, SOL_RESTRIKE_GAP_MS, SOL_COOLDOWN_MS (함수는 쓰지 않고 값만 쓴다)
 
 // PORTA 0~5번 비트 = D22~D27 = 솔레노이드 1~6번
 const uint8_t SOL_MASK = 0x3F;
@@ -79,10 +79,15 @@ bool punchMask(uint8_t mask) {
     return false;
   }
 
-  PORTA = (PORTA & ~SOL_MASK) | mask;   // ① 고른 솔레노이드를 같은 순간에 켜기
-  delay(SOL_PULSE_MS);                  // ② 누르는 시간 (solenoid.h)
-  allOff();                             // ③ 바로 끄기
-  recordPunch();
+  for (uint8_t strike = 0; strike < SOL_STRIKES; strike++) {   // 같은 칸을 SOL_STRIKES 번 (solenoid.h)
+    if (strike > 0) {
+      delay(SOL_RESTRIKE_GAP_MS);       // 핀이 올라올 시간 (solenoid.h)
+    }
+    PORTA = (PORTA & ~SOL_MASK) | mask; // ① 고른 솔레노이드를 같은 순간에 켜기
+    delay(SOL_PULSE_MS);                // ② 누르는 시간 (solenoid.h)
+    allOff();                           // ③ 바로 끄기
+    recordPunch();                      // 과열 방지는 누른 횟수로 센다
+  }
   delay(SOL_COOLDOWN_MS);               // ④ 쉬기 (solenoid.h)
   return true;
 }
@@ -113,10 +118,14 @@ void printMask(uint8_t mask) {
 void printHelp() {
   Serial.print(F("켜는 시간 "));
   Serial.print(SOL_PULSE_MS);
-  Serial.print(F("ms, 쉬는 시간 "));
+  Serial.print(F("ms x "));
+  Serial.print(SOL_STRIKES);
+  Serial.print(F("번 (사이 "));
+  Serial.print(SOL_RESTRIKE_GAP_MS);
+  Serial.print(F("ms), 쉬는 시간 "));
   Serial.print(SOL_COOLDOWN_MS);
-  Serial.println(F("ms (solenoid.h), 과열 방지 10초에 40번까지"));
-  Serial.println(F("  0~63 + Enter : 그 솔레노이드들을 동시에 1번"));
+  Serial.println(F("ms (solenoid.h), 과열 방지 10초에 40번 누름까지"));
+  Serial.println(F("  0~63 + Enter : 그 솔레노이드들을 동시에 한 칸 찍기 (SOL_STRIKES 번 누름)"));
   Serial.println(F("       예) 1 → 1번만,  7 → 1·2·3번(왼쪽 열),  63 → 6개 전부"));
   Serial.println(F("  y + Enter    : 1번 → 6번 하나씩 (배선·번호 확인)"));
   Serial.println(F("  ?            : 도움말"));
