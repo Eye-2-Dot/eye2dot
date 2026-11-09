@@ -146,8 +146,8 @@
 // 작업 결과 ('D'/'E') — 둘 다 점자 프레임을 보낸(받은) 때부터 센다
 //   ATmega 는 LINK_JOB_TIMEOUT_MS 가 지나면 'E' 를 보낸다. 다만 이 검사는 안내 재생·출력 대기에서만 하므로
 //   그 직전에 출력 버튼을 누르면 타각을 마친 뒤에 'D' 가 나간다.
-//   타각은 한 줄 최대 BRAILLE_MAX_CELLS 칸 × 칸당 약 0.23초(솔레노이드 30ms + 쉼 200ms) ≈ 9.2초.
-//   그래서 ESP32 는 115초 + 9.2초 + 여유 → 130초까지 기다린다.
+//   타각은 한 줄 최대 BRAILLE_MAX_CELLS 칸 × 칸당 약 0.32초(솔레노이드 30ms 두 번 + 사이 60ms + 쉼 200ms, solenoid.h 의 SOL_CELL_MS) ≈ 12.8초.
+//   그래서 ESP32 는 115초 + 12.8초 + 여유 → 130초까지 기다린다.
 //   (이 계산은 mega/src/solenoid.cpp 의 static_assert 가 컴파일할 때 검사한다)
 #define LINK_REPLY_TIMEOUT_MS   130000UL  // ESP32 가 'D'/'E' 를 기다리는 최대 시간 (음성 듣기 + 버튼 + 타각)
 #define LINK_JOB_TIMEOUT_MS     115000UL  // ATmega 가 출력 버튼을 기다리다 포기하고 'E' 를 보내는 시간
