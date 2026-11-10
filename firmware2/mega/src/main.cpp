@@ -9,7 +9,7 @@
  * 핀 번호는 pins.h 에 있습니다.
  *
  * 지금은 다른 모듈이 없어서, USB 시리얼로 솔레노이드를 시험하는 명령만 들어 있습니다.
- * (시리얼 모니터 115200, 줄 끝 "새 줄")
+ * (시리얼 모니터 115200. 줄 끝 설정은 아무거나 — Enter 가 없으면 1초 뒤 자동 처리)
  *   0~63 + Enter : 그 솔레노이드들을 동시에 한 칸 찍기 (두 번 누름)
  *   y            : 솔레노이드 1번 → 6번 하나씩 (배선·번호 확인)
  *   t            : 시험 칸 [1, 63] — 첫 칸 1번 하나, 둘째 칸 6개 전부
@@ -24,8 +24,13 @@
 
 static const uint32_t BAUD_RATE = 115200;
 
-static char    lineBuf[8];
-static uint8_t lineLen = 0;
+static char     lineBuf[8];
+static uint8_t  lineLen    = 0;
+static uint32_t lastCharMs = 0;   // 마지막 글자를 받은 시각
+
+// 시리얼 모니터가 "줄 끝 없음(No line ending)"이어도 되도록,
+// 글자가 들어온 뒤 이만큼 아무 입력이 없으면 Enter 를 친 것으로 본다 (펌웨어 1 시험과 같음)
+static const uint16_t LINE_IDLE_MS = 1000;
 
 static void printHelp() {
   Serial.println();
@@ -115,6 +120,12 @@ void loop() {
       lineLen = 0;
     } else if (lineLen < sizeof(lineBuf) - 1) {
       lineBuf[lineLen++] = c;
+      lastCharMs = millis();
     }
+  }
+  // Enter 없이 1초가 지나면 받은 글자를 한 줄로 처리
+  if (lineLen > 0 && millis() - lastCharMs >= LINE_IDLE_MS) {
+    handleLine();
+    lineLen = 0;
   }
 }
