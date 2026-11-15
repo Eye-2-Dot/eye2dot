@@ -146,10 +146,14 @@
 // 작업 결과 ('D'/'E') — 둘 다 점자 프레임을 보낸(받은) 때부터 센다
 //   ATmega 는 LINK_JOB_TIMEOUT_MS 가 지나면 'E' 를 보낸다. 다만 이 검사는 안내 재생·출력 대기에서만 하므로
 //   그 직전에 출력 버튼을 누르면 타각을 마친 뒤에 'D' 가 나간다.
-//   타각은 한 줄 최대 BRAILLE_MAX_CELLS 칸 × 칸당 약 0.23초(솔레노이드 30ms + 쉼 200ms) ≈ 9.2초.
-//   그래서 ESP32 는 115초 + 9.2초 + 여유 → 130초까지 기다린다.
-//   (이 계산은 mega/src/solenoid.cpp 의 static_assert 가 컴파일할 때 검사한다)
-#define LINK_REPLY_TIMEOUT_MS   130000UL  // ESP32 가 'D'/'E' 를 기다리는 최대 시간 (음성 듣기 + 버튼 + 타각)
+//   타각 한 장은 보통 30~50초, 가장 길 때 약 110초다 (모터가 28BYJ-48 이라 느리다 — 헤드 7mm/초, 랙 10mm/초):
+//     헤드 원점 잡기 최대 약 26초 (보통은 원점 옆에서 시작해 2초)
+//     + 카드 랙 영점 최대 약 16초 (전원을 켠 뒤 첫 작업만) + 카드 밀기 약 11초
+//     + 헤드가 15칸을 오가는 거리 최대 약 33초 + 15칸 × (기다림 + 솔레노이드) 약 7초 + 랙 되돌리기 약 11초
+//   그래서 ESP32 는 115초 + 약 120초 + 여유 → 240초까지 기다린다.
+//   (이 계산은 mega/src/punch.cpp 와 solenoid.cpp 의 static_assert 가 컴파일할 때 검사한다.
+//    모터 속도·거리(mega/include/motion.h)를 고쳐 타각이 길어지면 거기서 컴파일이 멈춘다)
+#define LINK_REPLY_TIMEOUT_MS   240000UL  // ESP32 가 'D'/'E' 를 기다리는 최대 시간 (음성 듣기 + 버튼 + 타각)
 #define LINK_JOB_TIMEOUT_MS     115000UL  // ATmega 가 출력 버튼을 기다리다 포기하고 'E' 를 보내는 시간
 #define LINK_REQUEST_RETRY_MS   200UL     // 'R' 을 보냈는데 조각이 안 오면 다시 요청하는 간격
 #define LINK_AUDIO_STALL_MS     1000UL    // 이만큼 새 조각이 없으면 음성 수신이 끝난 것으로 본다

@@ -4,7 +4,7 @@
 
 설치: `cd server && pip install -r requirements.txt`
 
-실행: `cd server && uvicorn main:app --reload`
+실행: `cd server && uvicorn main:app --host 0.0.0.0 --port 8000` (`--host 0.0.0.0` 이 없으면 기기·휴대폰이 접속하지 못한다. 개발 중에는 `--reload` 를 덧붙여도 된다)
 
 ---
 

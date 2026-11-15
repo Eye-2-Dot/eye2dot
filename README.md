@@ -3,7 +3,7 @@
 사진 한 장을 찍으면 Gemini 가 무엇인지 판단하고, 그 결과를 **점자 라벨로 찍고 음성으로 읽어 주는** 시각장애인용 점자 라벨링 시스템.
 
 - **라벨 모드**: 사물 사진 → 사물 이름 → 점자 라벨 + 음성 안내 (펌웨어 1, 라벨 출력기)
-- **책 모드**: 책 페이지 사진 → 본문 글자 인식(OCR) → 점역 (서버·앱에서 지원, 책 타각기 펌웨어는 아직 없음)
+- **책 모드**: 책 페이지 사진 → 본문 글자 인식(OCR) → 점역 (서버·앱에서 지원. 책 점역기 펌웨어 2 는 코드가 있고 실제 기구에서는 시험 전)
 
 ## 폴더 지도
 
@@ -12,6 +12,7 @@
 | [`app/`](app/) | Flutter 앱 — 모드 선택, 촬영, 결과 화면 | [`app/README.md`](app/README.md) |
 | [`server/`](server/) | FastAPI 서버 — Gemini 인식, 점역(`braille.py`), 음성(`speech.py`) | [`docs/api-spec.md`](docs/api-spec.md) (설치·실행 포함) |
 | [`firmware1/`](firmware1/) | 펌웨어 1 라벨 출력기 — ESP32-CAM(`cam/`) + ATmega2560(`mega/`) | [`firmware1/README.md`](firmware1/README.md) |
+| [`firmware2/`](firmware2/) | 펌웨어 2 책 점역기 — ESP32(`esp/`) + ATmega2560(`mega/`). A4 한 장에 30칸 × 25줄 | [`firmware2/README.md`](firmware2/README.md) |
 | [`docs/`](docs/) | API·통신 규격 | 아래 "기준 문서" |
 
 ## 기준 문서
@@ -21,9 +22,10 @@
 | 내용 | 기준 |
 |---|---|
 | 서버 HTTP 주소, 응답 형식, 음성 형식 | [`docs/api-spec.md`](docs/api-spec.md) |
-| 폴링 제안(`/print`, `/jobs` — 아직 실제 서버에 없음), 두 칩(ESP32-CAM ↔ ATmega2560) 사이 프레임 | [`docs/POLLING_API.md`](docs/POLLING_API.md) |
+| 폴링(`/print`, `/jobs` — 서버에 구현됨), 펌웨어 1 의 두 칩(ESP32-CAM ↔ ATmega2560) 사이 프레임 | [`docs/POLLING_API.md`](docs/POLLING_API.md) |
 | 시리얼 값 (통신 속도, 프레임 번호, 크기·시간 한도) | [`firmware1/common/protocol.h`](firmware1/common/protocol.h) |
 | 펌웨어 1 사용법, 배선, 시험 방법 | [`firmware1/README.md`](firmware1/README.md) |
+| 펌웨어 2 사용법, 배선, 시험 방법, 두 칩(ESP32 ↔ ATmega2560) 사이 프레임 | [`firmware2/README.md`](firmware2/README.md), [`firmware2/common/protocol.h`](firmware2/common/protocol.h) |
 
 ## 비밀값 — git 에 올리지 않는 파일
 
@@ -33,6 +35,7 @@
 |---|---|---|
 | `server/.env` | Gemini API 키 | `server/` 에 `.env` 를 만들고 `GEMINI_API_KEY=발급받은_키` 한 줄. 없으면 서버가 켜지지 않는다 |
 | `firmware1/cam/include/secrets.h` | Wi-Fi 이름·비밀번호, 서버(노트북) IP | 같은 폴더의 `secrets.example.h` 를 `secrets.h` 로 복사해 채운다. 없으면 cam 빌드가 멈춘다 |
+| `firmware2/esp/include/secrets.h` | 위와 같음 (펌웨어 2 용. `firmware2/tests/esp32_net_check/include/secrets.h` 도) | 같은 폴더의 `secrets.example.h` 를 복사해 채운다 |
 
 - **견본 파일(`secrets.example.h`)에는 진짜 값을 넣지 말 것.** 견본은 git 에 올라간다.
 - 비밀은 아니지만 컴퓨터마다 다른 `upload_ports.ini`(COM 포트), `*.code-workspace`(VS Code 작업공간)도 올리지 않는다.

@@ -70,26 +70,15 @@ constexpr uint8_t PIN_LINK_TX = 18;   // PD3, ATmega 가 보내는 핀(TX1) → 
 constexpr uint8_t PIN_SOL[6] = { 22, 23, 24, 25, 26, 27 };
 
 // ─────────────────────────────────────────────
-// 스텝 모터 2개 (담당: 준석)
+// 스텝 모터 2개 (담당: 준석) — 움직이는 코드는 stepper.cpp, 조정값은 motion.h
 // ─────────────────────────────────────────────
-// STEP : 펄스 하나에 한 스텝 이동
-// DIR  : 회전 방향
-// EN   : 드라이버 켜기/끄기 (A4988·DRV8825 계열은 LOW 일 때 켜짐)
-constexpr uint8_t PIN_HEAD_STEP = 36;   // PC1, 스텝 A (헤드 이동) STEP
-constexpr uint8_t PIN_HEAD_DIR  = 37;   // PC0, 스텝 A (헤드 이동) DIR
-constexpr uint8_t PIN_HEAD_EN   = 38;   // PD7, 스텝 A (헤드 이동) EN
-
-constexpr uint8_t PIN_TAPE_STEP = 40;   // PG1, 스텝 B (테이프 이송) STEP
-constexpr uint8_t PIN_TAPE_DIR  = 41;   // PG0, 스텝 B (테이프 이송) DIR
-constexpr uint8_t PIN_TAPE_EN   = 42;   // PL7, 스텝 B (테이프 이송) EN
-
-// L298N 임시 연결 메모
-//   STEP/DIR 드라이버가 오기 전까지 L298N 으로 시험할 때의 배선입니다.
-//   L298N 은 코일 4선(IN1~IN4)을 직접 제어하므로 핀 4개씩 씁니다.
-//     스텝 A(헤드)   = D36~D39 → IN1~IN4
-//     스텝 B(테이프) = D40~D43 → IN1~IN4
-//   이 동안에는 위의 STEP/DIR/EN 상수 대신 이 네 핀을 쓰고,
-//   D39·D43 은 다른 용도로 쓰지 마세요.
+// 모터   : 28BYJ-48 (5V, 감속 기어가 들어 있는 소형 스텝 모터). 출력 부품의 모터 자리가 이 모터 치수다.
+// 드라이버: ULN2003 보드 (모터와 한 묶음으로 파는 초록색 보드). 모터의 흰 5핀 커넥터를 보드에 꽂는다.
+//   보드의 IN1~IN4 에 Mega 핀 4개를 연결하고, 프로그램이 코일 4개를 순서대로 켜서 돌린다.
+//   보드의 + 는 5V(벅 컨버터), − 는 GND. Mega 의 5V 핀에서 모터 전원을 끌어오지 말 것(전류 부족).
+//   (예전의 A4988 용 STEP/DIR/EN 상수 PIN_HEAD_STEP·PIN_TAPE_STEP 등은 없앴다 — 2026-11-15 모터 확정)
+constexpr uint8_t PIN_HEAD_IN[4] = { 36, 37, 38, 39 };   // PC1 PC0 PD7 PG2, 모터 A (헤드)     → ULN2003 IN1~IN4
+constexpr uint8_t PIN_CARD_IN[4] = { 40, 41, 42, 43 };   // PG1 PG0 PL7 PL6, 모터 B (카드 랙)  → ULN2003 IN1~IN4
 
 // ─────────────────────────────────────────────
 // 조작 버튼 (INPUT_PULLUP)
@@ -103,8 +92,10 @@ constexpr uint8_t PIN_BTN_PRINT   = 32;   // PC5, 출력 버튼
 // ─────────────────────────────────────────────
 // 센서
 // ─────────────────────────────────────────────
+// 원점 스위치: COM → GND, NO → D34 (INPUT_PULLUP). 눌리면 LOW
 constexpr uint8_t PIN_HEAD_LIMIT   = 34;   // PC3, 헤드 원점 리밋 스위치
-constexpr uint8_t PIN_LABEL_SENSOR = 35;   // PC2, 라벨 위치 센서 (선택 사항)
+constexpr uint8_t PIN_CARD_SENSOR  = 35;   // PC2, 카드 감지 센서 (선택 사항 — motion.h 의 CARD_SENSOR_INSTALLED)
+constexpr uint8_t PIN_LABEL_SENSOR = PIN_CARD_SENSOR;   // 예전 이름
 
 // ─────────────────────────────────────────────
 // 상태 표시

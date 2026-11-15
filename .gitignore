@@ -12,3 +12,6 @@ __pycache__/
 **/secrets.h
 **/.pio/
 **/upload_ports.ini
+
+# PC 모의 시험의 컴파일 결과
+**/tests/host_sim/build/

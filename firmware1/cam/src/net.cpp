@@ -9,6 +9,7 @@
 #include <ArduinoJson.h>
 
 #include "net.h"
+#include "link.h"   // 연결을 기다리는 동안 온 촬영 요청에 실패를 알리기 위해
 
 #if __has_include("secrets.h")
   #include "secrets.h"
@@ -41,6 +42,12 @@ void netBegin() {
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    // 공유기가 꺼져 있거나 이름·암호가 틀리면 여기서 계속 기다린다.
+    // 그동안 촬영 버튼이 눌리면 바로 실패를 알린다 (ATmega 가 인식 중 115초를 다 기다리지 않게)
+    if (linkTakeCapture()) {
+      Serial.print("\n[Wi-Fi] 아직 연결 전 — 촬영 요청에 실패를 알림");
+      linkSendAlert(ALERT_NETWORK);
+    }
   }
   Serial.printf("\nESP32 IP: %s\n", WiFi.localIP().toString().c_str());
 }

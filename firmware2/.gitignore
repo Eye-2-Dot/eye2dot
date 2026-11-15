@@ -1,0 +1,11 @@
+.pio/
+.vscode/
+**/secrets.h
+!tests/host_sim/mock/secrets.h
+tests/host_sim/sim_mega
+tests/host_sim/sim_esp32
+tests/host_sim/test_json
+tests/host_sim/*.log
+
+# PC 모의 시험용 가짜 값 (진짜 비밀값이 아님) — 저장소에 올린다
+!tests/host_sim/mock/secrets.h

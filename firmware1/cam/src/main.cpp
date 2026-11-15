@@ -415,8 +415,9 @@ void setup() {
 
   checkHealth();
 
-  // 부팅하는 동안(Wi-Fi 연결 등) 쌓인 바이트는 버린다.
-  // 그동안 눌린 촬영 버튼('C')도 버려지므로 ATmega 는 인식 중 시간 초과 뒤 실패음을 낸다.
+  // 부팅하는 동안 쌓인 바이트는 버린다.
+  // Wi-Fi 연결을 기다리는 동안 온 촬영 요청('C')에는 netBegin() 이 바로 실패를 알렸다.
+  // 그 뒤 여기까지(서버 확인 몇 초) 사이에 눌린 'C' 는 버려지므로 ATmega 는 인식 중 시간 초과 뒤 실패음을 낸다.
   linkDiscardInput();
   usbCaptureCommand();
 

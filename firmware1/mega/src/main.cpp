@@ -8,7 +8,8 @@
  *   button  : 버튼 떨림 방지, "새로 눌림" (D31 촬영, D32 출력)     button.h
  *   job     : 촬영 요청('C'), 작업 진행 — 안내 재생 → 출력 버튼 → 타각 → 'D'/'E',
  *             상태 LED (상태와 버튼 표는 job.h)                    job.h
- *   punch   : 점자 타각 — 솔레노이드로 찍기 (헤드 이동은 아직 없음)  punch.h
+ *   punch   : 점자 타각 — 헤드 원점 → 카드 공급 → 칸마다 이동·찍기  punch.h
+ *             (stepper = 스텝 모터 2개, solenoid = 솔레노이드 6개, 조정값은 motion.h)
  *   console : USB 시리얼 시험 명령, 상태 출력                      console.h
  * 핀 번호는 pins.h, ESP32 와의 약속은 common/protocol.h 에 있습니다.
  *
@@ -32,7 +33,7 @@ void setup() {
   // 솔레노이드가 켜질 수 있습니다. consoleInit() 의 500ms 기다림보다 먼저 해서 그 구간을 없앱니다.
   // (부트로더가 도는 동안과 업로드 중에는 코드로 막을 수 없으므로 D22~D27 풀다운 저항이 필요 — README)
   // punchInit() 은 Serial 을 쓰지 않으므로 순서를 바꿔도 로그 순서는 같습니다.
-  punchInit();     // 솔레노이드 6개 출력 + 모두 끔
+  punchInit();     // 솔레노이드 6개 출력 + 모두 끔, 스텝 모터 2개 끔
 
   consoleInit();   // USB 시리얼 + 도움말 (다른 모듈의 로그보다 먼저)
   jobInit();       // 상태 LED

@@ -34,7 +34,9 @@ const uint32_t SPEECH_BODY_TIMEOUT_MS    = 5000;
 //   200자 문장은 약 30~40초(240~320KB)라 여유를 두고 512KB. 버퍼는 PSRAM 에 잡는다(net.cpp)
 const size_t   SPEECH_MAX_BYTES  = 512 * 1024;   // 8kHz 기준 약 64초
 
-// Wi-Fi 에 연결한다 (연결될 때까지 기다림)
+// Wi-Fi 에 연결한다 (연결될 때까지 기다림).
+// 기다리는 동안 ATmega 의 촬영 요청('C')이 오면 알림음 프레임(ALERT_NETWORK)으로 바로 실패를 알린다.
+// linkBegin() 다음에 부를 것
 void netBegin();
 
 String baseUrl();

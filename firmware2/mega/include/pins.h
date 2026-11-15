@@ -2,10 +2,10 @@
  * Eye 2 Dot — 펌웨어 2 (책 점역기)
  * pins.h — 핀 번호 상수 모음 (팀 공용)
  *
- * ※ 초안입니다. firmware2/펌웨어2_부품목록.md "5-1. 아두이노 메가 핀"(11/3)을 옮겼습니다.
- *   - 솔레노이드(D22~D27)는 펌웨어 1 과 같아서 확정으로 봅니다.
- *   - 스텝 모터·원점 스위치는 11/6 구조 변경(종이 = 세로(Y) 이송, 헤드 = 가로(X)만 이동) 전의 값이라
- *     스텝 모터 담당이 다시 정한 뒤 이 파일만 고치면 됩니다.
+ * 2026-11-15 스텝 모터·원점 스위치·버튼 핀을 확정했습니다 (종이 = 세로(Y) 이송, 헤드 = 가로(X)만 이동).
+ *   - 솔레노이드(D22~D27)는 펌웨어 1 과 같습니다.
+ *   - 스텝 모터는 17HS3430(NEMA17, 12V) + A4988·DRV8825 계열 드라이버. 핀 번호는 펌웨어 1 과 같은 자리(D36~D42)를 씁니다.
+ *     (11/3 초안의 D2·D3·D5·D6·D8·D9·D10 에서 바뀌었습니다)
  * 배선이 바뀌면 이 파일만 고치면 모든 모듈에 반영됩니다. 각자 branch 에서 따로 고치면 합칠 때 충돌이 나니
  * 바꿀 때는 팀에 먼저 알려 주세요.
  *
@@ -37,20 +37,27 @@
 constexpr uint8_t PIN_SOL[6] = { 22, 23, 24, 25, 26, 27 };
 
 // ─────────────────────────────────────────────
-// 스텝 모터 (담당: 스텝 모터) — 초안, 다시 정할 것
+// 스텝 모터 2개 — 17HS3430 (NEMA17, 12V) + A4988·DRV8825 계열 드라이버
 // ─────────────────────────────────────────────
-// A4988: STEP 펄스 하나에 한 스텝, DIR 방향, EN 은 LOW 일 때 켜짐
-constexpr uint8_t PIN_X_STEP = 2;    // 헤드 가로(X) 이동
-constexpr uint8_t PIN_X_DIR  = 5;
-constexpr uint8_t PIN_Y_STEP = 3;    // 종이 세로(Y) 이송
-constexpr uint8_t PIN_Y_DIR  = 6;
-constexpr uint8_t PIN_MOTOR_EN = 8;  // A4988 EN 모두 같이
+// STEP 펄스 하나에 한 스텝, DIR 방향, EN 은 LOW 일 때 켜짐. 조정값은 config.h
+constexpr uint8_t PIN_X_STEP = 36;   // 헤드 가로(X) 이동
+constexpr uint8_t PIN_X_DIR  = 37;
+constexpr uint8_t PIN_X_EN   = 38;
+constexpr uint8_t PIN_Y_STEP = 40;   // 종이판 세로(Y) 이송
+constexpr uint8_t PIN_Y_DIR  = 41;
+constexpr uint8_t PIN_Y_EN   = 42;
 
 // ─────────────────────────────────────────────
-// 원점 스위치 (INPUT_PULLUP, 눌리면 LOW) — 초안
+// 원점 스위치 (INPUT_PULLUP, COM → GND, NO → 핀. 눌리면 LOW)
 // ─────────────────────────────────────────────
-constexpr uint8_t PIN_X_HOME = 9;
-constexpr uint8_t PIN_Y_HOME = 10;
+constexpr uint8_t PIN_X_LIMIT = 34;  // 헤드, 위에서 볼 때 오른쪽 끝
+constexpr uint8_t PIN_Y_LIMIT = 35;  // 종이판, 시작 쪽 끝
+
+// ─────────────────────────────────────────────
+// 버튼·부저
+// ─────────────────────────────────────────────
+constexpr uint8_t PIN_BTN_CONTINUE = 32;  // "출력 계속" 버튼 → GND (INPUT_PULLUP). 움직이는 중에 누르면 멈춤
+constexpr uint8_t PIN_BUZZER       = 9;   // (선택) 능동 부저. 없으면 비워 둠 — config.h 의 USE_BUZZER
 
 // ─────────────────────────────────────────────
 // ESP32 통신 (Serial1) — 배선 안내용 (코드는 Serial1 객체로 씀)
