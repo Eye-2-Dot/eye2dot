@@ -121,7 +121,8 @@
 // ─────────────────────────────────────────────
 // 음성 형식 — 서버(server/speech.py)와 반드시 같아야 한다
 // ─────────────────────────────────────────────
-#define AUDIO_CHUNK_MAX    256    // 조각 하나의 최대 크기. ATmega 시리얼 수신 버퍼(256B)와 맞춘 값
+#define AUDIO_CHUNK_MAX    256    // 조각 하나의 최대 크기. 프레임으로는 머리·검사값 5B 를 더해 최대 261B.
+                                  // ATmega 수신 버퍼는 256B 라 Mega 가 linkPoll() 로 계속 읽어 줘야 한다 (조각마다 'R' 로 하나씩 받음)
 #define AUDIO_SAMPLE_RATE  8000
 #define AUDIO_SILENCE      128
 

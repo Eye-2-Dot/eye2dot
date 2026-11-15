@@ -18,6 +18,7 @@ static long phys[2] = {600, 400};       // 스위치가 눌리는 지점에서 �
 static bool noSwitch = false;           // 스위치가 고장 난 상황 시험
 static FILE* punchLog = nullptr;
 static unsigned long pressAt = 0, releaseAt = 0;
+static unsigned long pressInPunchAfter = 0;   // 이 시각 뒤 처음 솔레노이드가 켜질 때 짧게(80ms) 누름
 
 void simOnPrint(const char* t) {
   if (strstr(t, "버튼을 누르세요")) { pressAt = millis() + 600; releaseAt = pressAt + 200; }
@@ -26,6 +27,7 @@ void simOnPrint(const char* t) {
 void simOnPortA(uint8_t before, uint8_t after) {
   before &= 0x3F; after &= 0x3F;
   if (before == 0 && after != 0) {
+    if (pressInPunchAfter && !pressAt && millis() >= pressInPunchAfter) { pressAt = millis() + 40; releaseAt = pressAt + 80; }
     fprintf(punchLog, "%.3f %.3f %d\n", phys[0] / X_STEPS_PER_MM, phys[1] / Y_STEPS_PER_MM, after);
     fflush(punchLog);
   }
@@ -48,6 +50,7 @@ int main(int, char** argv) {
   if (getenv("DROP")) simDropRate = atof(getenv("DROP"));
   double secs    = getenv("SIM_SECS") ? atof(getenv("SIM_SECS")) : 30;
   double resetAt = getenv("RESET_AT") ? atof(getenv("RESET_AT")) : 0;
+  if (getenv("PRESS_IN_PUNCH")) pressInPunchAfter = (unsigned long)(atof(getenv("PRESS_IN_PUNCH")) * 1000);
   if (getenv("PRESS_AT")) { pressAt = (unsigned long)(atof(getenv("PRESS_AT")) * 1000); releaseAt = pressAt + 200; }
   PORTA.hook = true;
   simLinkInit(Serial1);

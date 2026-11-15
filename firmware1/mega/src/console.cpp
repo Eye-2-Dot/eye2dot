@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 
+#include "button.h"
 #include "console.h"
 #include "job.h"
 #include "link.h"
@@ -180,6 +181,13 @@ static bool handleMotorCommand(char cmd) {
     return true;
   }
   stepperClearStop();          // 앞에서 멈춘 표시를 지우고 새로 시작
+
+  // 이 함수를 빠져나갈 때(어느 return 이든) 버튼 상태를 다시 맞춘다.
+  // 모터가 움직이는 동안에는 buttonsUpdate() 가 돌지 않으므로, 비상 정지로 누른 버튼이
+  // 그 뒤에 "새로 눌림"(촬영 시작, 잘못 누름 소리)으로 잡히지 않게 한다 (job.cpp 의 punch() 와 같은 처리).
+  struct ResyncButtonsOnExit {
+    ~ResyncButtonsOnExit() { buttonsClearPresses(); }
+  } resyncButtons;
 
   switch (cmd) {
     case 'H':

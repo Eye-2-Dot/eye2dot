@@ -1,6 +1,6 @@
 // 가짜 Arduino 의 몸통 + 가짜 기계 + 소리 모듈 대역
 //   - 시계: micros()·delay() 를 부를 때마다 가짜 시계가 간다 (진짜로 기다리지 않아 몇 초 만에 끝난다)
-//   - 핀  : STEP 펄스를 세어 헤드·랙 위치를 계산하고, 원점 스위치는 그 위치로 눌림을 정한다
+//   - 핀  : ULN2003 IN1~IN4 코일 순서(phaseOf)를 읽어 헤드·랙 위치를 계산하고, 원점 스위치는 그 위치로 눌림을 정한다
 //   - 소리: speech.cpp 는 AVR 타이머를 직접 쓰므로 PC 에서는 이름만 같은 빈 함수로 바꾼다
 #include <Arduino.h>
 
@@ -174,6 +174,10 @@ int digitalRead(uint8_t pin) {
   }
   if (machine.mode[pin] == INPUT_PULLUP || machine.mode[pin] == INPUT) {
     if (machine.level[pin] == 99) return LOW;       // 99 = 시험이 "버튼 누름"으로 표시한 값
+    if (pin == PIN_BTN_CAPTURE && machine.capFromUs && simNowUs >= machine.capFromUs &&
+        (!machine.capUntilUs || simNowUs < machine.capUntilUs)) {
+      return LOW;
+    }
     if (pin == PIN_BTN_PRINT) {
       bool held  = machine.heldFromUs && simNowUs >= machine.heldFromUs &&
                    (!machine.releaseAtUs || simNowUs < machine.releaseAtUs);

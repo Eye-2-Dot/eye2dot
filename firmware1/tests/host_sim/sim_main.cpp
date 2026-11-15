@@ -298,6 +298,71 @@ static void scenarioStop(bool byUsb) {
   checkNear(machine.cardMm(), 0.0, 0.05, "끝난 뒤 카드 랙 위치(mm)");
 }
 
+// 출력 버튼으로 시작한 타각을 촬영 버튼(D31)으로 비상 정지하고, 그 버튼을 계속 누르고 있을 때
+// 멈춘 뒤 촬영('C')이 새로 시작되면 안 된다 (떼었다가 다시 눌러야 새 촬영)
+static void scenarioStopCapture() {
+  simPowerOn(0);
+  setup();
+  runLoop(200);
+  puts("── 타각 도중 촬영 버튼으로 멈추고, 그 버튼을 계속 누르고 있음 ──");
+  Serial1.tx.clear();
+  simBeeps.clear();
+  sendBraille(FULL15);
+  runLoop(AUDIO_CHUNK_MAX);
+  runLoop(3500);
+  uint64_t t0 = simNowUs;
+  machine.heldFromUs  = t0;                   // 출력 버튼으로 타각 시작, 1.5초 뒤 뗌
+  machine.releaseAtUs = t0 + 1500000;
+  machine.capFromUs   = t0 + 9000000;         // 9초 뒤 촬영 버튼을 누르고 계속 누름
+  machine.capUntilUs  = 0;
+  runLoop(100);                               // 타각은 이 안에서 멈출 때까지 진행
+  machine.heldFromUs = machine.releaseAtUs = 0;
+  runLoop(500);                               // 촬영 버튼은 아직 누르고 있음
+  size_t eAt = Serial1.tx.size();
+  for (size_t i = Serial1.tx.size(); i > 0; i--) if (Serial1.tx[i - 1] == REPLY_ERROR) { eAt = i - 1; break; }
+  check(eAt < Serial1.tx.size(), "ESP32 에 'E'(실패)를 보냄");
+  bool cap = false;
+  for (size_t i = eAt + 1; i < Serial1.tx.size(); i++) if (Serial1.tx[i] == CMD_CAPTURE) cap = true;
+  check(!cap, "누르고 있는 촬영 버튼으로 새 촬영('C')을 시작하지 않음");
+  check(!simBeeps.empty() && simBeeps.back() == "FAIL", "마지막 소리가 실패음 (준비음으로 덮이지 않음)");
+  machine.capUntilUs = simNowUs;              // 뗌
+  runLoop(300);
+  machine.capFromUs = simNowUs; machine.capUntilUs = simNowUs + 200000;   // 다시 짧게 누름
+  runLoop(400);
+  cap = false;
+  for (size_t i = eAt + 1; i < Serial1.tx.size(); i++) if (Serial1.tx[i] == CMD_CAPTURE) cap = true;
+  check(cap, "뗐다가 다시 누르면 새 촬영('C')");
+  machine.capFromUs = machine.capUntilUs = 0;
+}
+
+// USB 시험 명령(Z = 랙 영점, 약 15초)으로 움직이는 도중 촬영 버튼으로 멈추고 계속 누르고 있음
+//   → 멈춘 뒤 촬영('C')이 새로 시작되면 안 된다
+static void scenarioStopConsole() {
+  simPowerOn(0);
+  setup();
+  runLoop(200);
+  puts("── USB 명령 Z 로 움직이는 도중 촬영 버튼으로 멈추고, 그 버튼을 계속 누르고 있음 ──");
+  Serial1.tx.clear();
+  machine.capFromUs  = simNowUs + 3000000;    // 3초 뒤 누르고 계속 누름
+  machine.capUntilUs = 0;
+  Serial.rx.push_back((uint8_t)'Z');
+  Serial.rx.push_back((uint8_t)'\n');
+  runLoop(100);                               // Z 는 이 안에서 멈출 때까지 진행
+  runLoop(500);                               // 촬영 버튼은 아직 누르고 있음
+  check(motorsOff(), "멈춤 — 두 모터의 코일이 모두 꺼짐");
+  bool cap = false;
+  for (uint8_t b : Serial1.tx) if (b == CMD_CAPTURE) cap = true;
+  check(!cap, "누르고 있는 촬영 버튼으로 새 촬영('C')을 시작하지 않음");
+  machine.capUntilUs = simNowUs;              // 뗌
+  runLoop(300);
+  machine.capFromUs = simNowUs; machine.capUntilUs = simNowUs + 200000;   // 다시 짧게 누름
+  runLoop(400);
+  cap = false;
+  for (uint8_t b : Serial1.tx) if (b == CMD_CAPTURE) cap = true;
+  check(cap, "뗐다가 다시 누르면 새 촬영('C')");
+  machine.capFromUs = machine.capUntilUs = 0;
+}
+
 static void usb(const char* keys, double ms = 400) {
   for (const char* k = keys; *k; k++) Serial.rx.push_back((uint8_t)*k);
   runLoop(ms);
@@ -357,6 +422,8 @@ int main(int argc, char** argv) {
   else if (name == "console")  scenarioConsole();
   else if (name == "stopbtn")  scenarioStop(false);
   else if (name == "stopusb")  scenarioStop(true);
+  else if (name == "stopcap")  scenarioStopCapture();
+  else if (name == "stopcon")  scenarioStopConsole();
   else { printf("모르는 시나리오\n"); return 2; }
 
   printf("===== %s: %s =====\n", name.c_str(), failures == 0 ? "모두 통과" : "실패 있음");

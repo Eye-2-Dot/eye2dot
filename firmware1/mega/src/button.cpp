@@ -69,8 +69,17 @@ bool buttonTakePress(ButtonId id) {
 }
 
 
+// 눌림 표시를 지우고, 버튼의 "지금 상태"를 다시 읽어 맞춥니다.
+// 타각처럼 buttonsUpdate() 가 오래 안 불린 뒤에 부르면, 그동안 누르고 있는 버튼이
+// 곧바로 "새로 눌림"으로 잡히지 않습니다 (떼었다가 다시 눌러야 새 눌림).
 void buttonsClearPresses() {
+  uint32_t now = millis();
   for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
-    buttons[i].pressed = false;
+    Button& b = buttons[i];
+    bool raw    = (digitalRead(b.pin) == LOW);
+    b.stable    = raw;
+    b.lastRaw   = raw;
+    b.changedMs = now;
+    b.pressed   = false;
   }
 }

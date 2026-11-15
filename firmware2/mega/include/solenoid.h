@@ -60,6 +60,13 @@ void solenoidInit();
 void solenoidAllOff();
 
 /*
+ * 지금 찍고 있는 칸을 그만둡니다 (취소·비상 정지).
+ * 솔레노이드를 바로 끄고, solenoidPunchCell() 안이면 남은 타격과 쉬는 시간을 건너뛰고 돌아옵니다.
+ * solenoidIdle() 안(= solenoidPunchCell 이 기다리는 동안)에서 불러도 됩니다.
+ */
+void solenoidAbort();
+
+/*
  * 한 칸 찍기: mask 의 점을 동시에 켜고 → SOL_PULSE_MS 뒤 끄고 (SOL_STRIKES 번 반복) → SOL_COOLDOWN_MS 쉽니다.
  * mask 가 0(빈칸)이면 아무것도 안 하고 바로 돌아옵니다. (헤드·종이 이동은 스텝 모터 쪽에서)
  * 과열 방지 한도에 걸리면 찍기 전에 열이 빠질 때까지 기다립니다.

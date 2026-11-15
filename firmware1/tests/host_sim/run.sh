@@ -40,6 +40,8 @@ run default badjob     # 카드에 안 들어가는 점자
 run default console    # USB 시험 명령
 run default stopbtn    # 움직이는 도중 버튼으로 멈추기
 run default stopusb    # 움직이는 도중 USB 로 멈추기
+run default stopcap    # 촬영 버튼으로 멈춘 뒤 그 버튼을 계속 누르고 있음
+run default stopcon    # USB 명령으로 움직이다 촬영 버튼으로 멈춘 뒤 계속 누르고 있음
 echo; echo "##### 원점 스위치가 왼쪽 끝일 때 (HEAD_HOME_AT_RIGHT = false) #####"
 run homeleft label
 echo; echo "##### 카드 감지 센서를 달았을 때 (CARD_SENSOR_INSTALLED = true) #####"

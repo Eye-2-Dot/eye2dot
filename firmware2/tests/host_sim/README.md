@@ -10,6 +10,8 @@ g++ -std=c++17 -I../../common -I../../esp/include test_json.cpp -o test_json && 
 python3 run_sim.py            # 정상 흐름: 27줄 -> 2쪽, 찍힌 자리 확인, 완료 보고
 python3 run_sim.py drop       # 바이트 1% 손상 -> 재전송으로 끝까지 가는지
 python3 run_sim.py noswitch   # 원점 스위치 고장 -> 오류로 멈추는지
+python3 run_sim.py stop       # 타각 도중 버튼 -> 그 자리에 멈추고 취소로 보고
+python3 run_sim.py stopshort  # 솔레노이드가 한 칸을 찍는 0.3초 안에 짧게(80ms) 누름 -> 그래도 멈추는지
 ```
 
 코드를 고친 뒤 이 세 가지가 "모두 통과"로 나오는지 먼저 보고 기기에 올리면 됩니다.

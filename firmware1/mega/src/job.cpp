@@ -135,7 +135,7 @@ static void startJob(uint32_t now) {
     speechStop();
   }
 
-  // 작업 시작 전에 눌려 있던 버튼은 버립니다
+  // 작업 시작 전에 눌려 있던 버튼은 버립니다 (그 순간 누르고 있던 버튼은 떼었다가 다시 눌러야 인식)
   buttonsClearPresses();
 
   // 시작 시각은 millis() 를 새로 읽지 않고 이번 loop 의 now 를 씁니다.
@@ -188,7 +188,7 @@ static void punch() {
 
   bool ok = punchBraille(linkJob());
 
-  buttonsClearPresses();      // 타각 중에 눌린 것은 버립니다
+  buttonsClearPresses();      // 타각 중에 눌린 것은 버리고, 아직 누르고 있는 버튼(비상 정지)도 새 눌림으로 치지 않습니다
   if (ok) {
     finishJob(true, F("타각 완료"));
     speechBeep(BEEP_DONE);

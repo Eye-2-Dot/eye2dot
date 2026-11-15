@@ -23,10 +23,13 @@ static_assert(PIN_SOL[0] == 22 && PIN_SOL[1] == 23 && PIN_SOL[2] == 24 &&
 // 기본: 아무것도 안 함. 다른 .cpp 에 같은 이름의 함수가 있으면 그쪽이 쓰인다 (solenoid.h 설명 참고)
 __attribute__((weak)) void solenoidIdle() {}
 
-// delay() 대신: 기다리는 동안 solenoidIdle() 을 계속 부른다
+static volatile bool abortReq = false;   // solenoidAbort() 가 켜면 남은 타격·기다림을 건너뜀
+
+// delay() 대신: 기다리는 동안 solenoidIdle() 을 계속 부른다.
+// solenoidAbort() 가 불리면 (solenoidIdle 안에서 불려도) 바로 기다림을 끝낸다.
 static void waitMs(uint16_t ms) {
   uint32_t start = millis();
-  while (millis() - start < ms) {
+  while (millis() - start < ms && !abortReq) {
     solenoidIdle();
   }
 }
@@ -61,7 +64,7 @@ static void heatWaitForRoom() {
   Serial.print(F("[솔레노이드] 과열 방지: "));
   Serial.print(waitMsTotal);
   Serial.println(F("ms 쉬고 찍습니다"));
-  while (waitMsTotal > 0) {                 // waitMs 는 16비트라 나눠서 기다린다
+  while (waitMsTotal > 0 && !abortReq) {    // waitMs 는 16비트라 나눠서 기다린다. 취소되면 그만
     uint16_t step = (waitMsTotal > 1000) ? 1000 : (uint16_t)waitMsTotal;
     waitMs(step);
     waitMsTotal -= step;
@@ -89,11 +92,15 @@ void solenoidPunchCell(uint8_t mask) {
     return;              // 빈칸
   }
 
+  abortReq = false;
   for (uint8_t strike = 0; strike < SOL_STRIKES; strike++) {
     if (strike > 0) {
       waitMs(SOL_RESTRIKE_GAP_MS);        // 핀이 올라올 시간
     }
     heatWaitForRoom();                    // 과열 방지 (보통은 바로 통과)
+    if (abortReq) {
+      return;                             // 취소·비상 정지 → 더 누르지 않음
+    }
 
     PORTA = (PORTA & ~SOL_MASK) | mask;   // ① 고른 점을 같은 순간에 켜기
     waitMs(SOL_PULSE_MS);                 // ② 누르는 시간
@@ -101,5 +108,14 @@ void solenoidPunchCell(uint8_t mask) {
 
     heatX100 += (uint32_t)SOL_PULSE_MS * 100;
   }
+  if (abortReq) {
+    return;
+  }
   waitMs(SOL_COOLDOWN_MS);                // ④ 쉬기
+}
+
+
+void solenoidAbort() {
+  solenoidAllOff();
+  abortReq = true;
 }

@@ -25,6 +25,8 @@ struct Machine {
   uint64_t  heldFromUs = 0;        // 이때부터 누르고 있음
   uint64_t  releaseAtUs = 0;       // 이때 뗌
   uint64_t  pressAgainAtUs = 0;    // 이때 다시 누름 (멈춤 요청)
+  uint64_t  capFromUs = 0;         // 촬영 버튼: 이때부터 누름
+  uint64_t  capUntilUs = 0;        // 촬영 버튼: 이때 뗌 (0 = 계속 누름)
   uint64_t  usbKeyAtUs = 0;        // 이때 USB 시리얼로 글자 하나가 들어옴
 
   // ── 기계 상태 (스텝 단위) ──

@@ -4,10 +4,11 @@
           python3 run_sim.py drop        (바이트 1% 를 일부러 깨뜨림 -> 재전송 확인)
           python3 run_sim.py noswitch    (원점 스위치 고장 -> 오류 처리 확인)
           python3 run_sim.py megareset   (타각 도중 Mega 가 다시 시작됨 -> ESP32 가 끝없이 기다리지 않는지)
-          python3 run_sim.py stop        (타각 도중 버튼 -> 그 자리에 멈추고 취소로 보고)"""
+          python3 run_sim.py stop        (타각 도중 버튼 -> 그 자리에 멈추고 취소로 보고)
+          python3 run_sim.py stopshort   (솔레노이드가 한 칸을 찍는 0.3초 안에 짧게 누름 -> 그래도 멈춤)"""
 import os, socket, subprocess, sys
 mode = sys.argv[1] if len(sys.argv) > 1 else "ok"
-secs = {"ok": 44, "drop": 50, "noswitch": 26, "megareset": 22, "stop": 18}[mode]
+secs = {"ok": 44, "drop": 50, "noswitch": 26, "megareset": 22, "stop": 18, "stopshort": 18}[mode]
 STRIKES = 2          # solenoid.h 의 SOL_STRIKES (한 칸을 누르는 횟수)
 a, b = socket.socketpair()
 def spawn(exe, sock, log, extra):
@@ -18,7 +19,7 @@ def spawn(exe, sock, log, extra):
     env = dict(os.environ, SIM_SECS=str(secs), PUNCH_LOG="punch.log", **extra)
     return subprocess.Popen([exe], stderr=open(log, "w"), preexec_fn=pre, env=env, close_fds=False)
 extra = {"drop": {"DROP": "0.01"}, "noswitch": {"NO_SWITCH": "1"},
-         "megareset": {"RESET_AT": "7"}, "stop": {"PRESS_AT": "7"}}.get(mode, {})
+         "megareset": {"RESET_AT": "7"}, "stop": {"PRESS_AT": "7"}, "stopshort": {"PRESS_IN_PUNCH": "7"}}.get(mode, {})
 open("punch.log", "w").close()
 pm = spawn("./sim_mega", a, "mega.log", extra)
 pe = spawn("./sim_esp32", b, "esp32.log", extra)
@@ -57,7 +58,7 @@ elif mode == "megareset":
     check("Mega 가 다시 시작됨", "다시 시작됨" in mega)
     check("ESP32 가 알아채고 기다림을 끝냄", "Mega 가 도중에 다시 시작됨" in esp)
     check("서버에 실패로 보고", '"ok":false,"error":"print_failed"' in esp and "작업 실패" in esp)
-elif mode == "stop":
+elif mode == "stop" or mode == "stopshort":
     check("버튼으로 멈춤", "[멈춤] 버튼" in mega)
     check("끝까지 찍지 않음", len(punch) < 7)
     check("멈춘 뒤 대기로 돌아가고 다시 움직이지 않음", mega.rstrip().split("[멈춤] 버튼")[-1].count("[상태]") == 1 and "[상태] 대기" in mega.split("[멈춤] 버튼")[-1])

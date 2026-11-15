@@ -38,6 +38,8 @@
 void solenoidIdle() {
   stepperUpdate();
   linkUpdate();
+  buttonUpdate();                              // 한 칸(약 0.3초) 동안에도 비상 정지 버튼을 읽음
+  if (buttonIsDown()) jobOnButtonDuringPunch();
 }
 
 void setup() {

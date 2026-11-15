@@ -14,6 +14,7 @@ static PageBuf buf;
 static uint8_t curSeq = 0, curPage = 0, pageCount = 1, doneCount = 0, lastErr = ERR_NONE;
 static bool    pendingPrint = false;
 static bool    cancelPending = false;   // 취소 요청이 왔음 (jobUpdate 가 처리)
+static bool    buttonStopPending = false; // 솔레노이드가 찍는 동안 버튼이 눌림 → 다음 jobUpdate 에서 멈춤
 static bool    ignoreRelease = false;   // 버튼으로 멈춘 뒤, 그 버튼을 떼는 것은 "짧게 누름"으로 치지 않는다
 static bool    keepMotorsOn  = false;   // USB 명령 e 로 켜 둔 동안에는 대기에서도 모터 전류를 끄지 않는다
 static unsigned long tRx = 0;
@@ -169,11 +170,19 @@ void jobKeepMotorsOn(bool on) {
 }
 
 // 취소 요청 (ESP32 의 X 프레임, USB 명령). 타각 함수 안에서 불릴 수 있어서 여기서는 표시만 하고
-// 실제로 멈추는 일은 jobUpdate 가 한다. 솔레노이드만은 바로 끈다.
+// 실제로 멈추는 일은 jobUpdate 가 한다. 솔레노이드만은 바로 끄고, 찍던 칸의 남은 타격도 건너뛴다.
 void jobOnCancel() {
   if (state == ST_IDLE || state == ST_BOOT || state == ST_ERROR) return;
-  solenoidAllOff();
+  solenoidAbort();
   cancelPending = true;
+}
+
+// 솔레노이드가 한 칸을 찍는 동안(solenoidIdle 안) 버튼이 눌린 것을 알린다.
+// 그 짧은 눌림을 놓치지 않으려고 표시해 두고, 다음 jobUpdate 에서 비상 정지로 처리한다.
+void jobOnButtonDuringPunch() {
+  if (!jobIsMoving()) return;
+  solenoidAbort();
+  buttonStopPending = true;
 }
 
 bool jobIsMoving() {
@@ -221,7 +230,9 @@ void jobUpdate() {
   }
   // 모터가 움직이는 동안 버튼을 누르면 즉시 멈춘다 (비상 정지).
   // 버튼 대기에서 "짧게 눌렀다 뗀" 뒤에 움직이기 시작하므로, 움직이는 중의 눌림은 새로 누른 것이다.
-  if (jobIsMoving() && buttonIsDown()) {
+  bool btnStop = buttonStopPending;
+  buttonStopPending = false;
+  if (jobIsMoving() && (btnStop || buttonIsDown())) {
     stopNow(F("버튼"));
     return;
   }
@@ -251,7 +262,7 @@ void jobUpdate() {
 
     case ST_PRINTING:
       punchUpdate();
-      if (cancelPending) break;                      // 찍는 사이에 취소가 옴 → 다음 바퀴에서 멈춤
+      if (cancelPending || buttonStopPending) break; // 찍는 사이에 취소·버튼 → 다음 바퀴에서 멈춤
       if (!punchBusy()) {
         stepperMoveToMm(AX_X, PARK_X_MM);
         stepperMoveToMm(AX_Y, PARK_Y_MM);
