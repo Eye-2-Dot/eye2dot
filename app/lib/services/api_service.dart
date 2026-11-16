@@ -160,14 +160,14 @@ class ApiService {
 
   /// 출력 요청 — 결과 화면의 '출력하기'. 서버 대기열에 작업을 넣는다.
   ///
-  /// [mode]    kModeLabel(→ 라벨 출력기 fw1) 또는 kModeBook(→ 책 타각기 fw2)
+  /// [mode]    kModeLabel(→ 라벨 출력기 fw1) 또는 kModeBook(→ 책 점역기 fw2)
   /// [text]    인식된 텍스트
   /// [reason]  판단 근거. 펌웨어 1이 음성으로 읽어 준다 (없으면 빈 문자열로 보낸다)
   /// [braille] 서버에서 받은 점자 배열 **그대로** (라벨 `List<int>` / 책 `List<List<int>>`).
   ///           앱에서 거울 모양으로 바꾸지 말 것. 서버가 기기에 내줄 때 바꾼다 (server/mirror.py).
   ///
   /// 성공: {"ok": true, "job_id": "7cabc156cc10", "device": "fw1", "waiting": 1}
-  ///       device  = 작업이 간 기기 (fw1 라벨 출력기 / fw2 책 타각기)
+  ///       device  = 작업이 간 기기 (fw1 라벨 출력기 / fw2 책 점역기)
   ///       waiting = 그 기기에서 기다리는 작업 수 (방금 넣은 것 포함)
   /// 실패: {"ok": false, "error": ..., "reason": ...}
   ///       서버: invalid_mode / missing_braille / invalid_braille /

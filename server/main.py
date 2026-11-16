@@ -67,7 +67,7 @@ app.add_middleware(
 
 VALID_MODES = {"label", "book"}
 
-# 기기 이름 → 모드. 펌웨어 1 = 라벨 출력기, 펌웨어 2 = 책 타각기
+# 기기 이름 → 모드. 펌웨어 1 = 라벨 출력기, 펌웨어 2 = 책 점역기
 DEVICE_MODES = {"fw1": "label", "fw2": "book"}
 MODE_DEVICES = {mode: device for device, mode in DEVICE_MODES.items()}
 # 음성 안내가 있는 기기. 펌웨어 1 전용이라 fw2 에는 speech_id 를 붙이지 않는다

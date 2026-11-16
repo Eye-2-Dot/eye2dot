@@ -362,7 +362,7 @@ class _PrintButtonState extends State<_PrintButton> {
     final device = response['device'];
     final isBook = device == 'fw2' || (device == null && widget.mode == kModeBook);
     final message = isBook
-        ? '책 타각기로 보냈어요'
+        ? '책 점역기로 보냈어요'
         : '라벨 출력기로 보냈어요. 기기에서 안내를 듣고 출력 버튼을 눌러 주세요';
     final waiting = response['waiting'];
     return waiting is int ? '$message (대기 중인 작업 $waiting개)' : message;

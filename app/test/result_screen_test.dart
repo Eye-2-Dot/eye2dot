@@ -178,7 +178,7 @@ void main() {
     expect(printButtonEnabled(tester), isTrue);
   });
 
-  testWidgets('책: 2차원 braille 을 그대로 보내고 "책 타각기로 보냈어요"', (tester) async {
+  testWidgets('책: 2차원 braille 을 그대로 보내고 "책 점역기로 보냈어요"', (tester) async {
     final requests = useFakeServer((_) => printOk(device: 'fw2', waiting: 2));
     await tester.pumpWidget(const MaterialApp(
       home: ResultScreen(
@@ -201,7 +201,7 @@ void main() {
       [1, 2, 0, 8],
       [63, 0, 36],
     ]);
-    expect(find.text('책 타각기로 보냈어요 (대기 중인 작업 2개)'), findsOneWidget);
+    expect(find.text('책 점역기로 보냈어요 (대기 중인 작업 2개)'), findsOneWidget);
   });
 
   testWidgets('점자 데이터가 없으면 버튼이 꺼져 있고 요청도 없다 (기존 동작)', (tester) async {

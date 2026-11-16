@@ -53,7 +53,7 @@ static void help() {
 #if BENCH_FW == 1
   Serial.println(F("회로: 펌웨어 1 (라벨 출력기)"));
 #else
-  Serial.println(F("회로: 펌웨어 2 (책 타각기)"));
+  Serial.println(F("회로: 펌웨어 2 (책 점역기)"));
 #endif
   Serial.println(F(" ?        도움말"));
   Serial.println(F(" b        버튼·스위치 감시 켜기/끄기 (바뀔 때마다 한 줄)"));
