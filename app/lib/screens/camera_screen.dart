@@ -10,7 +10,8 @@ const Map<String, String> _kErrorMessages = {
   'invalid_image': '사진에 문제가 있습니다. 다시 촬영해 주세요',
   'recognition_failed': '인식하지 못했습니다. 다시 찍어 주세요',
   'rate_limit': '잠시 후 다시 시도해 주세요',
-  'network_error': '네트워크 연결을 확인해 주세요',
+  // 앱이 만든 network_error (reason 없음): 서버에 아예 닿지 못했거나 시간 초과
+  'network_error': '서버에 연결하지 못했습니다. 노트북 서버가 켜져 있는지, 같은 핫스팟에 연결되어 있는지 확인해 주세요',
   'parse_failed': '오류가 발생했습니다. 다시 시도해 주세요',
   'missing_text': '입력한 내용이 없습니다',
   'text_too_long': '너무 깁니다. 더 짧게 입력해 주세요',
@@ -29,10 +30,17 @@ int _labelCharCount(String text) =>
 /// 위 표에 없는 오류 코드일 때의 문구
 const String _kDefaultErrorMessage = '오류가 발생했습니다. 다시 시도해 주세요';
 
-/// 서버 reason 이 있어도 무시하고 항상 위 표의 고정 문구를 보여 줄 오류 코드.
+/// 서버가 보낸 network_error (reason 있음) 의 문구.
+/// 태블릿은 노트북 서버에 닿았지만, 서버가 Gemini 에 닿지 못한 경우다
+/// (핫스팟 데이터 소진, Gemini 서버 혼잡 등). 위 표의 network_error 문구대로 안내하면
+/// 멀쩡한 서버·핫스팟 연결을 확인하게 되므로 따로 안내한다.
+const String _kServerNetworkMessage =
+    '노트북 서버가 Gemini 에 연결하지 못했습니다. 핫스팟 데이터가 남아 있는지 확인하고 잠시 후 다시 시도해 주세요';
+
+/// 서버 reason 이 있어도 화면에 보여 주지 않고 앱의 고정 문구를 쓸 오류 코드.
 ///
 /// 이 둘의 reason 에는 "Gemini API 오류: ..." 같은 기술 문구가 담겨 있는데,
-/// 사용자가 할 수 있는 일은 네트워크 확인이나 재시도뿐이라 보여 줄 실익이 없다.
+/// 사용자가 할 수 있는 일은 연결 확인이나 재시도뿐이라 보여 줄 실익이 없다.
 /// 원래 reason 은 디버깅용으로 콘솔에만 남긴다.
 const Set<String> _kFixedMessageErrors = {'network_error', 'parse_failed'};
 
@@ -43,11 +51,12 @@ String _messageFor(Map<String, dynamic> response) {
   final reason = response['reason'];
   debugPrint('[CameraScreen] 실패 error=$error reason=$reason');
 
-  if (reason is String &&
-      reason.trim().isNotEmpty &&
-      !_kFixedMessageErrors.contains(error)) {
-    return reason;
-  }
+  final hasReason = reason is String && reason.trim().isNotEmpty;
+
+  // network_error 는 reason 이 있으면 서버가(Gemini 연결 실패), 없으면 앱이(서버 연결 실패) 만든 것이다
+  if (error == 'network_error' && hasReason) return _kServerNetworkMessage;
+
+  if (hasReason && !_kFixedMessageErrors.contains(error)) return reason;
   return _kErrorMessages[error] ?? _kDefaultErrorMessage;
 }
 
@@ -81,7 +90,14 @@ class _CameraScreenState extends State<CameraScreen> {
   // 1. 카메라 또는 갤러리 이미지 선택 (취소 시 에러 없이 복귀)
   Future<void> _pickImage(ImageSource source) async {
     try {
-      final XFile? pickedFile = await _picker.pickImage(source: source);
+      // 휴대폰 원본(4~5MB)을 핫스팟으로 그대로 보내지 않게 줄여서 받는다.
+      // 서버가 어차피 긴 변 1024px 로 줄이므로 인식에는 영향이 없다 (웹에서도 동작).
+      final XFile? pickedFile = await _picker.pickImage(
+        source: source,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 85,
+      );
 
       // 사용자가 촬영/선택 창을 그냥 닫은 경우 에러 없이 리턴
       if (pickedFile == null) return;
@@ -116,6 +132,8 @@ class _CameraScreenState extends State<CameraScreen> {
           final canSubmit = count > 0 && !tooLong;
 
           return AlertDialog(
+            // 키보드가 올라와 높이가 모자라면 대화상자 안이 스크롤된다
+            scrollable: true,
             title: const Text('점자 라벨 문구 직접 입력'),
             content: TextField(
               controller: controller,
@@ -223,7 +241,11 @@ class _CameraScreenState extends State<CameraScreen> {
         child: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24.0),
-            child: _buildContent(isLabelMode),
+            // 넓은 화면(태블릿)에서는 가운데 kContentMaxWidth 폭까지만 쓴다
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: kContentMaxWidth),
+              child: _buildContent(isLabelMode),
+            ),
           ),
         ),
       ),
@@ -267,18 +289,19 @@ class _CameraScreenState extends State<CameraScreen> {
             style: const TextStyle(fontSize: 16, color: Colors.red),
           ),
           const SizedBox(height: 24),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          // 좁은 화면에서 두 버튼이 한 줄에 안 들어가면 다음 줄로 내린다
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 12,
+            runSpacing: 12,
             children: [
               // [중요 4] 재촬영·재입력이 아닌 마지막 요청 재전송 실행
-              if (_lastRequest != null) ...[
+              if (_lastRequest != null)
                 ElevatedButton.icon(
                   onPressed: () => _submit(_lastRequest!, text: _lastText),
                   icon: const Icon(Icons.refresh),
                   label: const Text('다시 시도'),
                 ),
-                const SizedBox(width: 12),
-              ],
               // 텍스트 요청이 실패했으면 이전 글자를 채운 입력창을 다시 연다
               if (isTextRequest)
                 OutlinedButton.icon(

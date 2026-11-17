@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>App</string>
+	<string>Eye 2 Dot</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -26,6 +26,19 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- 노트북 서버가 http 라서 허용한다. NSAllowsLocalNetworking 같은 다른 키를 같이 넣으면
+	     iOS 10 이상에서 이 값이 무시되므로 이것만 둔다 -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>점자로 바꿀 물건이나 책을 촬영합니다.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>같은 Wi-Fi 의 Eye 2 Dot 서버에 연결합니다.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>앨범의 사진을 점자로 바꿉니다.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

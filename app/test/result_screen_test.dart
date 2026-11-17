@@ -173,7 +173,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(requests, hasLength(1));
-    expect(find.text('서버에 연결하지 못했어요. 서버가 켜져 있는지, 같은 네트워크에 있는지 확인해 주세요'),
+    expect(find.text('서버에 연결하지 못했어요. 노트북 서버가 켜져 있는지, 같은 핫스팟에 연결되어 있는지 확인해 주세요'),
         findsOneWidget);
     expect(printButtonEnabled(tester), isTrue);
   });
