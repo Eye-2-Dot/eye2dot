@@ -84,7 +84,8 @@ flutter pub get
 flutter run -d chrome
 ```
 
-서버 주소를 정하는 규칙, 시연(갤럭시탭 Chrome) 준비 순서, 화면 흐름은 [`app/README.md`](app/README.md).
+서버 주소를 정하는 규칙과 화면 흐름은 [`app/README.md`](app/README.md),
+갤럭시탭 Chrome 으로 시험·시연하는 순서는 [`docs/tablet-manual.md`](docs/tablet-manual.md).
 
 ### 3. 펌웨어
 
@@ -158,7 +159,7 @@ pio device monitor       # 시리얼 모니터 (115200)
 | [`server/`](server/) | FastAPI 서버 — Gemini 인식, 점역(`braille.py`), 거울 변환(`mirror.py`), 음성(`speech.py`·`speech_store.py`), 출력 대기열(`jobs.py`) | [`docs/api-spec.md`](docs/api-spec.md) (설치·실행 포함) |
 | [`firmware1/`](firmware1/) | 펌웨어 1 라벨 출력기 — ESP32-CAM(`cam/`) + ATmega2560(`mega/`), 부품 시험 프로그램(`tests/`) | [`firmware1/README.md`](firmware1/README.md) |
 | [`firmware2/`](firmware2/) | 펌웨어 2 책 점역기 — ESP32(`esp/`) + ATmega2560(`mega/`), 부품 시험 프로그램(`tests/`). A4 한 장에 25줄 × 30칸 | [`firmware2/README.md`](firmware2/README.md) |
-| [`docs/`](docs/) | API·통신 규격 | 아래 "기준 문서" |
+| [`docs/`](docs/) | API·통신 규격, 태블릿 시험·시연 매뉴얼 | 아래 "기준 문서" |
 
 ## 기준 문서
 
@@ -172,6 +173,7 @@ pio device monitor       # 시리얼 모니터 (115200)
 | 펌웨어 2 시리얼 약속 (통신 속도, 프레임 종류, 한 장의 줄 수·한 줄의 칸 수, 상태·오류 코드) | [`firmware2/common/protocol.h`](firmware2/common/protocol.h) |
 | 펌웨어 1 사용법, 배선, 시험 방법, 조정값 | [`firmware1/README.md`](firmware1/README.md) |
 | 펌웨어 2 사용법, 배선, 시험 방법, 조정값 | [`firmware2/README.md`](firmware2/README.md) |
+| 태블릿(갤럭시탭 Chrome) 시험·시연 순서, 시연 전 점검표, 문제 해결 | [`docs/tablet-manual.md`](docs/tablet-manual.md) |
 
 ## 비밀값 — git 에 올리지 않는 파일
 
