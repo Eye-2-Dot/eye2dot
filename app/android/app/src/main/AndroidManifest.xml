@@ -1,8 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 노트북 서버와 통신. debug·profile 빌드에는 Flutter 가 넣어 주지만 release 빌드에는 없어서 여기 둔다 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- usesCleartextTraffic: 노트북 서버가 https 가 아닌 http 라서 허용한다.
+         안드로이드 9 이상은 INTERNET 권한이 있어도 http 연결을 기본으로 막는다 (debug 빌드도 마찬가지) -->
     <application
-        android:label="app"
+        android:label="Eye 2 Dot"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

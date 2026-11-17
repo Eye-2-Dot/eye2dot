@@ -6,11 +6,17 @@ ESP32-CAM → 이미지 수신 → Gemini 인식 → 점역 → 응답
   - 점자를 거울 모양으로 바꿔 준다 (mirror.py, ?device=fw1·fw2 를 붙였을 때만)
   - 펌웨어 1 에는 음성을 미리 만들어 번호(speech_id)를 붙여 준다 (speech_store.py)
   - 앱 "출력하기" 작업을 기기별 대기열로 넘겨 준다 (폴링, jobs.py)
+
+태블릿·휴대폰 브라우저용으로 앱 화면(app/build/web)도 "/" 에서 보여 주고,
+켜질 때 노트북 IP(갤럭시탭 접속 주소, 펌웨어 secrets.h 의 서버 IP)를 출력한다 (파일 맨 끝).
 """
 
 import os
 import io
 import json
+import mimetypes
+import socket
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
@@ -18,6 +24,7 @@ from fastapi import FastAPI, Request, UploadFile, File, Form, Query, HTTPExcepti
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from google import genai
@@ -938,3 +945,67 @@ def job_done(job_id: str, report: DoneReport):
 def jobs_status():
     """지금 상태 한눈에 보기 (브라우저로 열어도 된다)."""
     return job_queue.status()
+
+
+# ─────────────────────────────────────────────
+# 앱 화면 — 태블릿·휴대폰 브라우저용 (app/README.md "태블릿·휴대폰 브라우저로 쓰기")
+#
+# app 폴더에서 flutter build web 으로 만든 app/build/web 을 "/" 에서 보여 준다.
+# 갤럭시탭 Chrome 으로 http://<노트북 IP>:8000/ 을 열면 앱이 뜨고, 앱은 같은 서버로 요청한다.
+#
+# 반드시 파일 맨 끝, 모든 API 주소를 등록한 뒤에 둘 것.
+# 서버는 주소를 등록된 순서대로 맞춰 보므로 "/" 를 먼저 붙이면 그 뒤의 API 주소를 모두 가로챈다.
+# (/docs 는 위에서 app = FastAPI(...) 를 만들 때 이미 등록된다)
+# ─────────────────────────────────────────────
+APP_WEB_DIR = Path(__file__).resolve().parent.parent / "app" / "build" / "web"
+
+# 접속 주소 출력용. main.py 는 uvicorn 이 몇 번 포트로 켜졌는지 알 수 없어서
+# 실행 명령(uvicorn main:app --host 0.0.0.0 --port 8000)과 같은 값을 적어 둔다.
+SERVER_PORT = 8000
+
+# Windows 는 파일 확장자 → 종류(MIME) 표를 레지스트리에서 읽는데, PC 에 따라 .mjs 가 text/plain 으로
+# 잡혀 있다. 종류가 틀리면 브라우저가 앱의 스크립트·엔진 파일을 실행하지 않으므로 직접 정해 둔다.
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("application/wasm", ".wasm")
+
+
+def local_ip() -> Optional[str]:
+    """이 노트북의 IP (같은 핫스팟의 갤럭시탭·ESP32 가 접속할 주소). 못 구하면 None.
+
+    UDP 소켓은 connect 해도 데이터를 보내지 않는다. 8.8.8.8 로 갈 때 쓰일 네트워크의
+    IP 를 운영체제에게 물어보기만 한다. 노트북이 유선 랜·VPN 에도 붙어 있으면 그쪽 IP 가 나올 수 있다.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
+def print_access_info(has_app: bool) -> None:
+    """켜질 때 접속 주소를 출력한다. 핫스팟에 따라 노트북 IP 가 바뀌므로 매번 확인할 수 있게.
+
+    flush=True: 출력을 파일로 돌려도(> log.txt) 모아 두지 않고 바로 쓰게 한다.
+    """
+    ip = local_ip()
+    shown_ip = ip or "<노트북 IP>"
+    lines = []
+    if has_app:
+        lines.append(f"갤럭시탭에서 접속: http://{shown_ip}:{SERVER_PORT}/")
+    else:
+        lines.append("앱 화면 없음: app 폴더에서 flutter build web 을 먼저 하세요")
+        lines.append(f"노트북 IP: {shown_ip}")
+    if ip is None:
+        lines.append("노트북 IP 를 알 수 없습니다. ipconfig 의 IPv4 주소를 확인하세요")
+    # 기기(ESP32)는 secrets.h 에 적힌 IP 로 서버를 찾는다 (firmware1/cam, firmware2/esp)
+    lines.append(f"펌웨어 secrets.h 의 서버 IP(SERVER_IP_VALUE)도 이 주소여야 합니다: {shown_ip}")
+    print("\n".join(lines), flush=True)
+
+
+if APP_WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=APP_WEB_DIR, html=True), name="app")
+print_access_info(has_app=APP_WEB_DIR.is_dir())

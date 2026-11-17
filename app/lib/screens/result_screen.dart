@@ -78,10 +78,16 @@ class ResultScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: Text(title)),
       body: SafeArea(
-        // 내용이 길면 이 영역만 세로로 스크롤된다
+        // 내용이 길면 이 영역만 세로로 스크롤된다.
+        // 넓은 화면(태블릿)에서는 가운데 kContentMaxWidth 폭까지만 쓴다.
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
-          child: isBook ? _buildBookContent(context) : _buildLabelContent(context),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: kContentMaxWidth),
+              child: isBook ? _buildBookContent(context) : _buildLabelContent(context),
+            ),
+          ),
         ),
       ),
       // 버튼은 스크롤과 상관없이 항상 화면 아래에 고정.
@@ -219,49 +225,52 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
-  /// 아래 고정 버튼: 다시 찍기 / 출력하기
+  /// 아래 고정 버튼: 다시 찍기 / 출력하기. 본문과 같은 폭(kContentMaxWidth)까지만 쓴다.
   Widget _buildButtons(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: SizedBox(
-                  height: 56,
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.camera_alt),
-                    label: const Text('다시 찍기', style: TextStyle(fontSize: 16)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: kContentMaxWidth),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 56,
+                    child: OutlinedButton.icon(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text('다시 찍기', style: TextStyle(fontSize: 16)),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: SizedBox(
-                  height: 56,
-                  // 출력할 데이터가 없으면 비활성화 (회색으로 눌리지 않는다)
-                  child: _PrintButton(
-                    enabled: _canPrint,
-                    mode: mode,
-                    text: text,
-                    reason: reason,
-                    braille: braille,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SizedBox(
+                    height: 56,
+                    // 출력할 데이터가 없으면 비활성화 (회색으로 눌리지 않는다)
+                    child: _PrintButton(
+                      enabled: _canPrint,
+                      mode: mode,
+                      text: text,
+                      reason: reason,
+                      braille: braille,
+                    ),
                   ),
                 ),
+              ],
+            ),
+            if (!_canPrint) ...[
+              const SizedBox(height: 8),
+              const Text(
+                '출력할 점자 데이터가 없습니다',
+                style: TextStyle(fontSize: 13, color: Colors.grey),
               ),
             ],
-          ),
-          if (!_canPrint) ...[
-            const SizedBox(height: 8),
-            const Text(
-              '출력할 점자 데이터가 없습니다',
-              style: TextStyle(fontSize: 13, color: Colors.grey),
-            ),
           ],
-        ],
+        ),
       ),
     );
   }
@@ -281,7 +290,11 @@ class ResultScreen extends StatelessWidget {
 const Duration _kSentLockDuration = Duration(seconds: 3);
 
 /// 서버에 아예 닿지 못했을 때(연결 실패·시간 초과)의 안내
-const String _kPrintNetworkMessage = '서버에 연결하지 못했어요. 서버가 켜져 있는지, 같은 네트워크에 있는지 확인해 주세요';
+const String _kPrintNetworkMessage =
+    '서버에 연결하지 못했어요. 노트북 서버가 켜져 있는지, 같은 핫스팟에 연결되어 있는지 확인해 주세요';
+
+/// 출력 결과 알림(SnackBar)이 떠 있는 시간. 문구가 길어 성공·실패 모두 6초.
+const Duration _kMessageDuration = Duration(seconds: 6);
 
 /// 그 밖에 이유를 알 수 없는 실패 (카메라 화면과 같은 문구)
 const String _kPrintDefaultMessage = '오류가 발생했습니다. 다시 시도해 주세요';
@@ -342,10 +355,7 @@ class _PrintButtonState extends State<_PrintButton> {
     if (!mounted) return; // 기다리는 동안 화면을 떠났으면 끝
 
     final ok = response['ok'] == true;
-    _showMessage(
-      ok ? _successMessage(response) : _failureMessage(response),
-      duration: Duration(seconds: ok ? 6 : 4),
-    );
+    _showMessage(ok ? _successMessage(response) : _failureMessage(response));
 
     if (!ok) {
       setState(() => _status = _PrintStatus.ready); // 실패는 바로 다시 누를 수 있게
@@ -380,10 +390,10 @@ class _PrintButtonState extends State<_PrintButton> {
     return _kPrintDefaultMessage;
   }
 
-  void _showMessage(String message, {required Duration duration}) {
+  void _showMessage(String message) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message), duration: duration));
+      ..showSnackBar(SnackBar(content: Text(message), duration: _kMessageDuration));
   }
 
   @override

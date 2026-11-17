@@ -6,6 +6,8 @@
 
 실행: `cd server && uvicorn main:app --host 0.0.0.0 --port 8000` (`--host 0.0.0.0` 이 없으면 기기·휴대폰이 접속하지 못한다. 개발 중에는 `--reload` 를 덧붙여도 된다)
 
+앱 화면: `GET /` — `app/build/web` 이 있을 때 앱 화면을 보여 준다 (만드는 법은 [`app/README.md`](../app/README.md) "태블릿·휴대폰 브라우저로 쓰기"). 아래 API 주소가 먼저 잡히고, 나머지 주소만 앱 화면 파일로 간다.
+
 ---
 
 ## 공통 사항

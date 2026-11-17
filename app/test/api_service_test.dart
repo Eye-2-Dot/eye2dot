@@ -111,6 +111,22 @@ void main() {
       ApiService.useMock = kUseMock;
       ApiService.clientFactory = http.Client.new;
       ApiService.retryDelayUnit = const Duration(seconds: 1);
+      ApiService.baseUrlOverride = null;
+    });
+
+    test('baseUrlOverride 를 넣으면 세 요청 모두 그 주소로 보낸다', () async {
+      ApiService.baseUrlOverride = 'http://192.168.43.10:8000';
+      final requests = useFakeServer((_) => jsonResponse({'ok': true}));
+
+      await ApiService.sendImage(bytes: emptyBytes, mode: kModeLabel);
+      await ApiService.sendText(text: '우유', mode: kModeLabel);
+      await ApiService.sendPrint(mode: kModeLabel, text: '우유', braille: <int>[13, 41]);
+
+      expect(requests.map((r) => r.url.toString()), [
+        'http://192.168.43.10:8000/process-file?mode=label',
+        'http://192.168.43.10:8000/translate',
+        'http://192.168.43.10:8000/print',
+      ]);
     });
 
     test('sendImage: /process-file 에 쿼리 mode + multipart image(파일 이름 포함)로 보낸다',
@@ -239,15 +255,15 @@ void main() {
       expect(r['ok'], isTrue);
     });
 
-    test('서버의 network_error(502)도 재시도한다', () async {
-      final requests = useFakeServer((_) => jsonResponse(
-          {'ok': false, 'error': 'network_error', 'reason': 'Gemini 서버에 연결하지 못했습니다'},
-          502));
+    test('서버의 network_error(502, Gemini 연결 실패)는 재시도하지 않고 reason 까지 그대로 돌려준다',
+        () async {
+      const body = {'ok': false, 'error': 'network_error', 'reason': 'Gemini 서버에 연결하지 못했습니다'};
+      final requests = useFakeServer((_) => jsonResponse(body, 502));
 
       final r = await ApiService.sendImage(bytes: emptyBytes, mode: kModeLabel);
 
-      expect(requests, hasLength(4));
-      expect(r['error'], 'network_error');
+      expect(requests, hasLength(1), reason: '같은 사진을 Gemini 에 여러 번 보내지 않는다');
+      expect(r, body);
     });
 
     test('rate_limit 은 재시도하지 않는다', () async {

@@ -70,6 +70,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 - `--host 0.0.0.0` 이 없으면 기기가 서버에 접속하지 못한다.
 - 브라우저에서 `http://localhost:8000/health` 가 열리면 켜진 것이다. 출력 대기열은 `/jobs`.
+- 켜질 때 노트북 IP 와 갤럭시탭 접속 주소를 출력한다. 이 IP 는 펌웨어 `secrets.h` 의 서버 IP 와 같아야 한다.
 - 음성을 만들려면 서버 컴퓨터가 인터넷에 연결되어 있어야 한다 (edge-tts).
 - 주소와 응답 형식 전체는 [`docs/api-spec.md`](docs/api-spec.md).
 
@@ -83,7 +84,7 @@ flutter pub get
 flutter run -d chrome
 ```
 
-서버 주소는 [`app/lib/constants.dart`](app/lib/constants.dart) 의 `kServerBaseUrl` 이다. 화면 흐름은 [`app/README.md`](app/README.md).
+서버 주소를 정하는 규칙, 시연(갤럭시탭 Chrome) 준비 순서, 화면 흐름은 [`app/README.md`](app/README.md).
 
 ### 3. 펌웨어
 
@@ -127,6 +128,7 @@ pio device monitor       # 시리얼 모니터 (115200)
 
 - **서버**: 사진 인식(Gemini), 점역, 거울 변환, 음성, 출력 대기열이 모두 들어 있다. 실제 Gemini 키로 인식을 확인했다.
 - **앱**: 모드 선택 → 촬영·사진 고르기·라벨 문구 직접 입력 → 결과 확인 → 출력하기(`POST /print`).
+  서버가 앱 화면도 띄워 주므로 태블릿·휴대폰 Chrome 으로 설치 없이 쓴다 — [`app/README.md`](app/README.md) "태블릿·휴대폰 브라우저로 쓰기".
 - **펌웨어 빌드**: 네 프로젝트와 부품 시험 프로그램이 PlatformIO 로 빌드된다.
 - **PC 모의 시험**: 보드 없이 두 펌웨어의 실제 코드를 PC 에서 돌리는 시험(`tests/host_sim`)을 모두 통과했다.
   실행 방법은 [`firmware1/tests/host_sim/README.md`](firmware1/tests/host_sim/README.md), [`firmware2/tests/host_sim/README.md`](firmware2/tests/host_sim/README.md).
@@ -141,14 +143,11 @@ pio device monitor       # 시리얼 모니터 (115200)
 - 펌웨어 1: 스텝 모터(28BYJ-48 + ULN2003) 구동, 스피커 음성 재생, ESP32-CAM 촬영 → 서버 전송, ESP32-CAM ↔ ATmega2560 UART 통신
 - 펌웨어 2: ESP32 ↔ ATmega2560 UART 통신, 모터·원점 스위치·타각을 기구에 물려 돌리기
 - 앱 → 서버 → 기기 전체 흐름
+- 갤럭시탭 Chrome 에서 앱 실행
 - 조립 뒤 실측해 맞출 숫자 (펌웨어 1 `mega/include/motion.h`, 펌웨어 2 `mega/include/config.h`). 지금은 설계값이고, 맞추는 순서는 각 펌웨어 README.
 
 ### 남은 과제
 
-- **휴대폰에서 앱 실행** (지금은 PC 의 Chrome 기준이다)
-  1. 서버 주소를 노트북 IP 로 바꾸기 ([`app/lib/constants.dart`](app/lib/constants.dart) 의 `kServerBaseUrl`)
-  2. Android release 빌드에 INTERNET 권한 추가 ([`app/android/app/src/main/AndroidManifest.xml`](app/android/app/src/main/AndroidManifest.xml). 지금은 debug·profile 빌드에만 있다)
-  3. iOS `Info.plist` 에 카메라·사진 권한 문구 추가 ([`app/ios/Runner/Info.plist`](app/ios/Runner/Info.plist))
 - **펌웨어 1**: 찍힌 카드 내보내기, 배터리 부족 감지, ESP32 부팅 완료 알림 등 — [`firmware1/README.md`](firmware1/README.md) "남은 일".
 
 ## 폴더 지도

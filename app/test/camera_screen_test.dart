@@ -35,6 +35,14 @@ http.Response jsonResponse(Object body, [int status = 200]) => http.Response.byt
       headers: {'content-type': 'application/json'},
     );
 
+/// 앱이 서버에 닿지 못했을 때(연결 실패·시간 초과)의 문구
+const String kConnectFailedMessage =
+    '서버에 연결하지 못했습니다. 노트북 서버가 켜져 있는지, 같은 핫스팟에 연결되어 있는지 확인해 주세요';
+
+/// 서버가 Gemini 에 닿지 못했을 때(서버가 보낸 network_error)의 문구
+const String kServerNetworkMessage =
+    '노트북 서버가 Gemini 에 연결하지 못했습니다. 핫스팟 데이터가 남아 있는지 확인하고 잠시 후 다시 시도해 주세요';
+
 /// 라벨 모드 카메라 화면을 띄우고 문구를 직접 입력해 보낸다.
 Future<void> submitText(WidgetTester tester, String text) async {
   await tester.pumpWidget(const MaterialApp(home: CameraScreen(mode: kModeLabel)));
@@ -160,8 +168,9 @@ void main() {
     expect(find.text('이름이 길어 라벨 카드에 담을 수 없습니다'), findsOneWidget);
   });
 
-  testWidgets('network_error 는 서버 reason 대신 고정 문구를 보여 준다', (tester) async {
-    useFakeServer((_) => jsonResponse({
+  testWidgets('서버가 보낸 network_error(Gemini 연결 실패)는 재시도 없이 핫스팟 데이터 문구를 보여 준다',
+      (tester) async {
+    final requests = useFakeServer((_) => jsonResponse({
           'ok': false,
           'error': 'network_error',
           'reason': 'Gemini API 오류: 503 UNAVAILABLE',
@@ -170,8 +179,9 @@ void main() {
     await submitText(tester, '우유');
     await tester.pumpAndSettle();
 
-    expect(find.text('네트워크 연결을 확인해 주세요'), findsOneWidget);
-    expect(find.textContaining('Gemini'), findsNothing);
+    expect(requests, hasLength(1), reason: '같은 요청을 Gemini 에 여러 번 보내지 않는다');
+    expect(find.text(kServerNetworkMessage), findsOneWidget);
+    expect(find.textContaining('UNAVAILABLE'), findsNothing, reason: '서버 reason 은 보여 주지 않는다');
   });
 
   testWidgets('parse_failed 는 서버 reason 대신 고정 문구를 보여 준다', (tester) async {
@@ -215,13 +225,13 @@ void main() {
     expect(jsonDecode(requests[1].body), {'text': '샴푸', 'mode': 'label'});
   });
 
-  testWidgets('서버에 연결하지 못하면 재시도 후 네트워크 문구를 보여 준다', (tester) async {
+  testWidgets('서버에 연결하지 못하면 재시도 후 서버·핫스팟 확인 문구를 보여 준다', (tester) async {
     final requests = useFakeServer((_) => throw http.ClientException('XMLHttpRequest error.'));
 
     await submitText(tester, '우유');
     await tester.pumpAndSettle();
 
     expect(requests, hasLength(4));
-    expect(find.text('네트워크 연결을 확인해 주세요'), findsOneWidget);
+    expect(find.text(kConnectFailedMessage), findsOneWidget);
   });
 }

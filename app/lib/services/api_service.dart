@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../constants.dart';
+import 'server_config.dart';
 
 /// 사진 인식은 서버가 Gemini를 거치므로 보통 2~5초 걸린다. 넉넉히 잡는다.
 const Duration _kImageTimeout = Duration(seconds: 30);
@@ -15,7 +16,7 @@ const Duration _kTextTimeout = Duration(seconds: 10);
 /// 출력 요청은 서버가 대기열에 넣기만 하므로 빠르다 (음성은 서버가 뒤에서 만든다).
 const Duration _kPrintTimeout = Duration(seconds: 10);
 
-/// 네트워크 오류 시 재시도 횟수. 첫 시도 1번 + 재시도 최대 3번 = 최대 4번 보낸다.
+/// 연결 실패 시 재시도 횟수. 첫 시도 1번 + 재시도 최대 3번 = 최대 4번 보낸다.
 const int _kMaxRetries = 3;
 
 /// 서버 통신 담당 클래스
@@ -42,6 +43,13 @@ class ApiService {
   /// 재시도 전에 쉬는 시간의 단위. n번째 재시도 전에 n배만큼 쉰다 (1초, 2초, 3초).
   @visibleForTesting
   static Duration retryDelayUnit = const Duration(seconds: 1);
+
+  /// 요청을 보낼 서버 주소. 평소에는 null 이고 server_config.dart 가 정한 주소(serverBaseUrl)를 쓴다.
+  /// 테스트에서 값을 넣으면 그 주소로 보낸다.
+  @visibleForTesting
+  static String? baseUrlOverride;
+
+  static String get _baseUrl => baseUrlOverride ?? serverBaseUrl;
 
   /// 이미지를 서버로 보내고 인식 + 점역 결과를 받아온다.
   ///
@@ -99,7 +107,9 @@ class ApiService {
   ///   network_error : 연결 실패(재시도 후에도) 또는 시간 초과
   ///   parse_failed  : 서버 응답이 JSON 이 아니거나 ok 필드가 없음 (예: FastAPI 자동 422 오류)
   ///
-  /// 보낼 곳: POST {kServerBaseUrl}/process-file?mode={mode}
+  /// 서버가 보내는 network_error(Gemini 연결 실패)에는 reason 이 있다. 이것은 재시도하지 않는다 (_send).
+  ///
+  /// 보낼 곳: POST {서버 주소}/process-file?mode={mode}   (서버 주소는 server_config.dart)
   ///         multipart/form-data, 필드 image(파일)
   ///
   /// kUseMock 이 true 면 서버에 보내지 않고 1초 뒤 더미 결과를 돌려준다.
@@ -109,7 +119,7 @@ class ApiService {
   }) async {
     if (useMock) return _mockResult(mode);
 
-    final uri = Uri.parse('$kServerBaseUrl/process-file')
+    final uri = Uri.parse('$_baseUrl/process-file')
         .replace(queryParameters: {'mode': mode});
 
     return _send(
@@ -132,7 +142,7 @@ class ApiService {
   ///
   /// 응답 형식은 sendImage 와 같다. reason 은 "직접 입력한 문구입니다."
   ///
-  /// 보낼 곳: POST {kServerBaseUrl}/translate
+  /// 보낼 곳: POST {서버 주소}/translate
   ///         JSON {"text": ..., "mode": ...}
   ///
   /// kUseMock 이 true 면 입력과 상관없이 "우유" 더미 결과를 돌려준다.
@@ -147,7 +157,7 @@ class ApiService {
       return {...mock, 'reason': '직접 입력한 문구입니다.'};
     }
 
-    final uri = Uri.parse('$kServerBaseUrl/translate');
+    final uri = Uri.parse('$_baseUrl/translate');
 
     return _send(
       timeout: _kTextTimeout,
@@ -177,7 +187,7 @@ class ApiService {
   /// 연결 실패여도 **재시도하지 않는다.** 요청이 서버에 닿은 뒤 연결이 끊긴 경우에 다시 보내면
   /// 같은 작업이 대기열에 두 번 들어가 두 번 출력되기 때문이다. 실패하면 사용자가 다시 누른다.
   ///
-  /// 보낼 곳: POST {kServerBaseUrl}/print
+  /// 보낼 곳: POST {서버 주소}/print
   ///         JSON {"mode", "text", "reason", "braille"}   (docs/POLLING_API.md 1장)
   ///
   /// kUseMock 이 true 면 서버에 보내지 않고 1초 뒤 가짜 성공을 돌려준다.
@@ -197,7 +207,7 @@ class ApiService {
       };
     }
 
-    final uri = Uri.parse('$kServerBaseUrl/print');
+    final uri = Uri.parse('$_baseUrl/print');
     final body = jsonEncode({
       'mode': mode,
       'text': text,
@@ -220,10 +230,13 @@ class ApiService {
     return mode == kModeBook ? _kMockBookResult : _kMockLabelResult;
   }
 
-  /// 요청을 보내고 응답을 Map 으로 바꾼다. 네트워크 오류면 재시도한다.
+  /// 요청을 보내고 응답을 Map 으로 바꾼다. 서버에 닿지 못했을 때만 재시도한다.
   ///
-  /// 재시도함    : 연결 실패(서버 꺼짐, 와이파이 끊김), 서버의 network_error(Gemini 연결 실패)
-  /// 재시도 안 함: 시간 초과, rate_limit, 그 밖에 서버가 답을 준 모든 실패
+  /// 재시도함    : 연결 실패(서버 꺼짐, 와이파이 끊김)
+  /// 재시도 안 함: 시간 초과, 서버가 답을 준 모든 실패 (network_error·rate_limit 포함)
+  ///
+  /// 서버의 network_error 는 서버가 Gemini 에 닿지 못했다는 뜻이다. 다시 보내면 같은 사진을
+  /// 핫스팟으로 또 올리고 서버도 Gemini 를 또 기다려 오래 걸리므로, 바로 화면에 알린다.
   ///
   /// [maxRetries] 재시도 최대 횟수. 기본은 _kMaxRetries(3). 0 이면 한 번만 보낸다 (sendPrint).
   static Future<Map<String, dynamic>> _send({
@@ -241,13 +254,7 @@ class ApiService {
             .send(buildRequest())
             .then(http.Response.fromStream)
             .timeout(timeout);
-        final result = _parse(response);
-
-        if (result['error'] == 'network_error' && attempt < maxRetries) {
-          debugPrint('[ApiService] 서버 network_error, 재시도 ${attempt + 1}/$maxRetries: ${result['reason']}');
-          continue;
-        }
-        return result;
+        return _parse(response);
       } on TimeoutException {
         // 시간 초과는 재시도하지 않는다. 서버가 아직 Gemini 를 기다리는 중일 가능성이 높아서,
         // 다시 보내면 같은 요청을 두 번 처리해 API 비용과 한도를 낭비하고 사용자도 오래 기다린다.

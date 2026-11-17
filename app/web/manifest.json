@@ -1,12 +1,12 @@
 {
-    "name": "app",
-    "short_name": "app",
+    "name": "Eye 2 Dot",
+    "short_name": "Eye 2 Dot",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "description": "점자 라벨 출력기·책 점역기 앱",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
         {

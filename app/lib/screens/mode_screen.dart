@@ -42,32 +42,41 @@ class ModeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Eye 2 Dot')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              '모드 선택',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.headlineMedium,
+      // 가로로 돌려 높이가 모자라면 세로로 스크롤되고,
+      // 넓은 화면(태블릿)에서는 가운데 kContentMaxWidth 폭까지만 쓴다.
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: kContentMaxWidth),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '모드 선택',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.headlineMedium,
+                  ),
+                  const SizedBox(height: 48),
+                  _buildModeButton(
+                    context,
+                    icon: Icons.label_outline,
+                    label: '점자 라벨 만들기',
+                    mode: kModeLabel,
+                  ),
+                  const SizedBox(height: 24),
+                  _buildModeButton(
+                    context,
+                    icon: Icons.menu_book_outlined,
+                    label: '책 점역하기',
+                    mode: kModeBook,
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 48),
-            _buildModeButton(
-              context,
-              icon: Icons.label_outline,
-              label: '점자 라벨 만들기',
-              mode: kModeLabel,
-            ),
-            const SizedBox(height: 24),
-            _buildModeButton(
-              context,
-              icon: Icons.menu_book_outlined,
-              label: '책 점역하기',
-              mode: kModeBook,
-            ),
-          ],
+          ),
         ),
       ),
     );
